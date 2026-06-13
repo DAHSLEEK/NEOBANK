@@ -1,0 +1,63 @@
+Phase 1 — Project Setup (Week 1)
+
+Install and configure XAMPP (Apache + MySQL + PHP)
+Set up MySQL root password and create your project database
+Install MySQL Workbench for schema design
+Set up a Git repository (locally and on GitHub) for version control
+Review literature on core banking systems and relational database design
+
+
+Phase 2 — Database Design (Weeks 2–3)
+
+Identify all entities: Customer, Account, Transaction, Branch, Employee, etc.
+Draw the Entity-Relationship (ER) diagram using MySQL Workbench
+Define attributes, data types, primary keys, and foreign keys
+Normalise the schema to at least Third Normal Form (3NF)
+Write and run SQL DDL scripts to create all tables with constraints
+
+
+Phase 3 — Database Implementation (Week 4)
+
+Populate tables with realistic test data (INSERT statements or CSV imports)
+Write stored procedures for key operations (e.g. fund transfer, account creation)
+Write triggers (e.g. auto-update balance after a transaction)
+Create views for reporting (e.g. account statement, transaction history)
+Add indexes on frequently queried columns (e.g. account number, customer ID)
+
+
+Phase 4 — PHP Web Application (Weeks 5–8)
+This is the biggest phase, broken into modules:
+
+Week 5: User authentication (login/logout, session management, role-based access)
+Week 6: Account dashboard and transaction processing (deposits, withdrawals, transfers)
+Week 7: Reporting module (account statements, balance summaries, transaction history)
+Week 8: Admin panel (manage customers, accounts, users) and full module integration
+
+Throughout this phase, every database interaction should use PDO with parameterised queries.
+
+Phase 5 — Testing (Week 9)
+
+Functional testing: does each feature work as expected?
+Database integrity testing: do constraints, triggers, and procedures behave correctly?
+Security testing: test for SQL injection, unauthorised access, session handling
+UI testing: check responsiveness across screen sizes
+Fix bugs and optimise slow queries
+
+
+Phase 6 — Dissertation Write-Up (Weeks 10–11)
+Structure your dissertation around these chapters:
+
+Introduction (background, aims, objectives)
+Literature Review (database design, core banking systems, PHP/MySQL in practice)
+System Design (ER diagram, schema, architecture decisions)
+Implementation (how you built it, key code and SQL excerpts)
+Testing and Evaluation (test results, what worked, what could improve)
+Conclusion (what was achieved, limitations, future work)
+
+
+Phase 7 — Final Submission (Week 12)
+
+Proofread and format the dissertation to GCU standards
+Ensure all Harvard references are consistent and complete
+Package and submit the source code alongside the dissertation
+Fill in your matriculation number and student email on the Initiation Document if not done already
