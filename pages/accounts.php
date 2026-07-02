@@ -29,18 +29,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     $account_type   = $_POST['account_type'];
     $account_name   = trim($_POST['account_name']);
-    $date_opened    = $_POST['date_opened'];
+    $date_opened = date('Y-m-d');
     $opening_balance = $_POST['opening_balance'];
 
     if ($account_id) {
         // UPDATE existing account
         $stmt = $pdo->prepare("
-            UPDATE ACCOUNT SET customer_id = ?, branch_id = ?, account_number = ?,
-                account_type = ?, account_name = ?, date_opened = ?
+            UPDATE ACCOUNT SET customer_id = ?, branch_id = ?,
+                account_type = ?, account_name = ?
             WHERE account_id = ?
         ");
-        $stmt->execute([$customer_id, $branch_id, $account_number, $account_type,
-                         $account_name, $date_opened, $account_id]);
+        $stmt->execute([$customer_id, $branch_id, $account_type,
+                         $account_name, $account_id]);
         $message = "Account updated successfully.";
     } else {
         // INSERT new account
@@ -152,8 +152,8 @@ require_once __DIR__ . '/../includes/header.php';
                 <?php if ($editAccount): ?>
                 <div class="col-md-4">
                     <label class="form-label">Account Number</label>
-                    <input type="text" name="account_number" class="form-control" required
-                           value="<?= htmlspecialchars($editAccount['account_number']) ?>">
+                    <input type="text" class="form-control" 
+                           value="<?= htmlspecialchars($editAccount['account_number']) ?>" disabled>
                 </div>
                 <?php else: ?>
                 <div class="col-md-4">
@@ -166,11 +166,7 @@ require_once __DIR__ . '/../includes/header.php';
                     <input type="text" name="account_name" class="form-control"
                            value="<?= htmlspecialchars($editAccount['account_name'] ?? '') ?>">
                 </div>
-                <div class="col-md-4">
-                    <label class="form-label">Date Opened</label>
-                    <input type="date" name="date_opened" class="form-control" required
-                           value="<?= htmlspecialchars($editAccount['date_opened'] ?? '') ?>">
-                </div>
+
 
                 <?php if (!$editAccount): ?>
                 <div class="col-md-4">
