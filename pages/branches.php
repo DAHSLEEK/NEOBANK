@@ -1,4 +1,6 @@
 <?php
+require_once __DIR__ . '/../config/auth.php';
+requireRole('Compliance Officer');
 require_once __DIR__ . '/../config/db.php';
 $pdo = getDBConnection();
 
