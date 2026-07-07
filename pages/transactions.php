@@ -6,16 +6,19 @@ $pdo = getDBConnection();
 
 $message = '';
 
-// Helper function: post one leg of a double-entry transaction
-function postLeg(PDO $pdo, int $accountId, string $type, float $amount, string $reference, string $category, string $narration): void {
+// Helper function: post one leg of a double-entry transaction and update balance
+function postLeg(PDO $pdo, int $accountId, string $type, float $amount, string $reference, string $category, string $narration, int $initiatedBy, ?string $counterpartyName = null): void {
     $stmt = $pdo->prepare("
         INSERT INTO TRANSACTION_HISTORY
             (account_id, transaction_type, amount, transaction_date, reference_number,
-             transaction_category, transaction_narration, status)
-        VALUES (?, ?, ?, NOW(), ?, ?, ?, 'COMPLETED')
+             transaction_category, transaction_narration, counterparty_name, status, initiated_by)
+        VALUES (?, ?, ?, NOW(), ?, ?, ?, ?, 'PENDING', ?)
     ");
-    $stmt->execute([$accountId, $type, $amount, $reference, $category, $narration]);
+    $stmt->execute([$accountId, $type, $amount, $reference, $category, $narration, $counterpartyName, $initiatedBy]);
+}
 
+// Helper function: update balance for an account
+function updateBalance(PDO $pdo, int $accountId, string $type, float $amount): void {
     $balStmt = $pdo->prepare("SELECT balance_id, balance, total_credit, total_debit FROM ACCOUNT_BALANCE WHERE account_id = ?");
     $balStmt->execute([$accountId]);
     $bal = $balStmt->fetch();
@@ -38,22 +41,93 @@ function postLeg(PDO $pdo, int $accountId, string $type, float $amount, string $
     $updStmt->execute([$newBalance, $newTotalCredit, $newTotalDebit, $bal['balance_id']]);
 }
 
-// Helper function: auto-generate unique reference number
+// Helper: generate unique reference number
 function generateReference(PDO $pdo): string {
     $datePart = date('Ymd');
     $unique   = strtoupper(substr(uniqid(), -6));
     return 'TXN-' . $datePart . '-' . $unique;
 }
 
-// Handle form submission
+// Handle rejection of a PENDING transaction group
+if (isset($_GET['reject']) && hasRole('Branch Manager')) {
+    $reference = $_GET['reject'];
+
+    $stmt = $pdo->prepare("
+        UPDATE TRANSACTION_HISTORY
+        SET status = 'REJECTED', authorised_by = ?
+        WHERE reference_number = ? AND status = 'PENDING'
+    ");
+    $stmt->execute([$_SESSION['user_id'], $reference]);
+
+    $message = "Transaction {$reference} has been rejected.";
+}
+
+// Handle authorisation of a PENDING transaction group (by reference number)
+if (isset($_GET['authorise']) && hasRole('Branch Manager')) {
+    $reference = $_GET['authorise'];
+
+    // Fetch all legs for this reference
+    $legs = $pdo->prepare("
+        SELECT * FROM TRANSACTION_HISTORY WHERE reference_number = ? AND status = 'PENDING'
+    ");
+    $legs->execute([$reference]);
+    $pendingLegs = $legs->fetchAll();
+
+    if ($pendingLegs) {
+        try {
+            $pdo->beginTransaction();
+
+            foreach ($pendingLegs as $leg) {
+                // Check sufficient funds for debit legs on CUSTOMER accounts only
+                // Internal accounts (Cash, Payable, Receivable) are allowed to go negative
+                if ($leg['transaction_type'] === 'Debit') {
+                    $accChk = $pdo->prepare("
+                        SELECT a.account_category, ab.balance
+                        FROM ACCOUNT a
+                        JOIN ACCOUNT_BALANCE ab ON ab.account_id = a.account_id
+                        WHERE a.account_id = ?
+                    ");
+                    $accChk->execute([$leg['account_id']]);
+                    $accInfo = $accChk->fetch();
+
+                    if ($accInfo['account_category'] === 'CUSTOMER' && $leg['amount'] > $accInfo['balance']) {
+                        throw new Exception("Insufficient funds on account ID " . $leg['account_id'] . " at time of authorisation.");
+                    }
+                }
+                // Update balance
+                updateBalance($pdo, $leg['account_id'], $leg['transaction_type'], $leg['amount']);
+
+                // Mark as COMPLETED
+                $upd = $pdo->prepare("
+                    UPDATE TRANSACTION_HISTORY
+                    SET status = 'COMPLETED', authorised_by = ?
+                    WHERE transaction_id = ?
+                ");
+                $upd->execute([$_SESSION['user_id'], $leg['transaction_id']]);
+            }
+
+            $pdo->commit();
+            $message = "Transaction {$reference} authorised successfully.";
+        } catch (Exception $e) {
+            $pdo->rollBack();
+            $message = "Error: " . $e->getMessage();
+        }
+    } else {
+        $message = "Error: No pending transaction found for reference {$reference}.";
+    }
+}
+
+// Handle new transaction submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $transaction_type = $_POST['transaction_type'];
-    $account_id       = $_POST['account_id'];
+    $account_id       = (int) $_POST['account_id'];
     $amount           = (float) $_POST['amount'];
     $category         = $_POST['transaction_category'];
-    $narration        = trim($_POST['transaction_narration']);
+    $narration          = trim($_POST['transaction_narration']);
+    $counterpartyName   = trim($_POST['counterparty_name'] ?? '');
+    $initiatedBy        = $_SESSION['user_id'];
 
-    // Fetch the customer account details and balance
+    // Fetch customer account and branch
     $accStmt = $pdo->prepare("
         SELECT a.account_id, a.branch_id, ab.balance
         FROM ACCOUNT a
@@ -62,96 +136,68 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     ");
     $accStmt->execute([$account_id]);
     $customerAcc = $accStmt->fetch();
-
-    $branchId = $customerAcc['branch_id'];
-    $reference = generateReference($pdo);
-    $error = '';
+    $branchId    = $customerAcc['branch_id'];
+    $reference   = generateReference($pdo);
 
     try {
         $pdo->beginTransaction();
 
         switch ($transaction_type) {
-
             case 'Cash Deposit':
-                // Debit branch CASH account, Credit customer account
                 $cashAcc = $pdo->prepare("SELECT account_id FROM ACCOUNT WHERE branch_id = ? AND account_category = 'INTERNAL-CASH'");
                 $cashAcc->execute([$branchId]);
                 $branchCashId = $cashAcc->fetchColumn();
-
-                postLeg($pdo, $branchCashId, 'Debit',  $amount, $reference, $category, 'Cash deposit - ' . $narration);
-                postLeg($pdo, $account_id,   'Credit', $amount, $reference, $category, 'Cash deposit - ' . $narration);
+                postLeg($pdo, $branchCashId, 'Debit',  $amount, $reference, $category, 'Cash deposit - ' . $narration, $initiatedBy);
+                postLeg($pdo, $account_id,   'Credit', $amount, $reference, $category, 'Cash deposit - ' . $narration, $initiatedBy);
                 break;
 
             case 'Cash Withdrawal':
-                // Check sufficient funds
-                if ($amount > $customerAcc['balance']) {
-                    throw new Exception("Insufficient funds. Current balance is £" . number_format($customerAcc['balance'], 2));
-                }
-                // Debit customer account, Credit branch CASH account
                 $cashAcc = $pdo->prepare("SELECT account_id FROM ACCOUNT WHERE branch_id = ? AND account_category = 'INTERNAL-CASH'");
                 $cashAcc->execute([$branchId]);
                 $branchCashId = $cashAcc->fetchColumn();
-
-                postLeg($pdo, $account_id,   'Debit',  $amount, $reference, $category, 'Cash withdrawal - ' . $narration);
-                postLeg($pdo, $branchCashId, 'Credit', $amount, $reference, $category, 'Cash withdrawal - ' . $narration);
+                postLeg($pdo, $account_id,   'Debit',  $amount, $reference, $category, 'Cash withdrawal - ' . $narration, $initiatedBy);
+                postLeg($pdo, $branchCashId, 'Credit', $amount, $reference, $category, 'Cash withdrawal - ' . $narration, $initiatedBy);
                 break;
 
             case 'Inward Transfer':
-                // External bank sending money in: Debit branch RECEIVABLE, Credit customer
                 $recAcc = $pdo->prepare("SELECT account_id FROM ACCOUNT WHERE branch_id = ? AND account_category = 'INTERNAL-RECEIVABLE'");
                 $recAcc->execute([$branchId]);
                 $branchRecId = $recAcc->fetchColumn();
-
-                postLeg($pdo, $branchRecId, 'Debit',  $amount, $reference, $category, 'Inward transfer - ' . $narration);
-                postLeg($pdo, $account_id,  'Credit', $amount, $reference, $category, 'Inward transfer - ' . $narration);
+                postLeg($pdo, $branchRecId, 'Debit',  $amount, $reference, $category, 'Inward transfer - ' . $narration, $initiatedBy, $counterpartyName);
+                postLeg($pdo, $account_id,  'Credit', $amount, $reference, $category, 'Inward transfer - ' . $narration, $initiatedBy, $counterpartyName);
                 break;
 
             case 'Outward Transfer':
-                // Customer sending money out to external bank: Debit customer, Credit branch PAYABLE
-                if ($amount > $customerAcc['balance']) {
-                    throw new Exception("Insufficient funds. Current balance is £" . number_format($customerAcc['balance'], 2));
-                }
                 $payAcc = $pdo->prepare("SELECT account_id FROM ACCOUNT WHERE branch_id = ? AND account_category = 'INTERNAL-PAYABLE'");
                 $payAcc->execute([$branchId]);
                 $branchPayId = $payAcc->fetchColumn();
-
-                postLeg($pdo, $account_id,  'Debit',  $amount, $reference, $category, 'Outward transfer - ' . $narration);
-                postLeg($pdo, $branchPayId, 'Credit', $amount, $reference, $category, 'Outward transfer - ' . $narration);
+                postLeg($pdo, $account_id,  'Debit',  $amount, $reference, $category, 'Outward transfer - ' . $narration, $initiatedBy, $counterpartyName);
+                postLeg($pdo, $branchPayId, 'Credit', $amount, $reference, $category, 'Outward transfer - ' . $narration, $initiatedBy, $counterpartyName);
                 break;
 
             case 'Internal Transfer':
-                // NeoBank to NeoBank: Debit sender, Credit receiver directly
-                $receiver_account_id = $_POST['receiver_account_id'] ?? null;
+                $receiver_account_id = (int) ($_POST['receiver_account_id'] ?? 0);
                 if (!$receiver_account_id) {
                     throw new Exception("Please select a receiver account for internal transfers.");
                 }
-                if ($receiver_account_id == $account_id) {
+                if ($receiver_account_id === $account_id) {
                     throw new Exception("Sender and receiver accounts cannot be the same.");
                 }
-                if ($amount > $customerAcc['balance']) {
-                    throw new Exception("Insufficient funds. Current balance is £" . number_format($customerAcc['balance'], 2));
-                }
-
-                postLeg($pdo, $account_id,          'Debit',  $amount, $reference, $category, 'Internal transfer out - ' . $narration);
-                postLeg($pdo, $receiver_account_id, 'Credit', $amount, $reference, $category, 'Internal transfer in - '  . $narration);
+                postLeg($pdo, $account_id,          'Debit',  $amount, $reference, $category, 'Internal transfer out - ' . $narration, $initiatedBy);
+                postLeg($pdo, $receiver_account_id, 'Credit', $amount, $reference, $category, 'Internal transfer in - '  . $narration, $initiatedBy);
                 break;
 
             case 'Bank Charge':
-                // Debit customer account, Credit branch CASH account
-                if ($amount > $customerAcc['balance']) {
-                    throw new Exception("Insufficient funds. Current balance is £" . number_format($customerAcc['balance'], 2));
-                }
                 $cashAcc = $pdo->prepare("SELECT account_id FROM ACCOUNT WHERE branch_id = ? AND account_category = 'INTERNAL-CASH'");
                 $cashAcc->execute([$branchId]);
                 $branchCashId = $cashAcc->fetchColumn();
-
-                postLeg($pdo, $account_id,   'Debit',  $amount, $reference, $category, 'Bank charge - ' . $narration);
-                postLeg($pdo, $branchCashId, 'Credit', $amount, $reference, $category, 'Bank charge - ' . $narration);
+                postLeg($pdo, $account_id,   'Debit',  $amount, $reference, $category, 'Bank charge - ' . $narration, $initiatedBy);
+                postLeg($pdo, $branchCashId, 'Credit', $amount, $reference, $category, 'Bank charge - ' . $narration, $initiatedBy);
                 break;
         }
 
         $pdo->commit();
-        $message = "Transaction posted successfully. Reference: " . $reference;
+        $message = "Transaction initiated successfully. Reference: {$reference}. Awaiting authorisation.";
 
     } catch (Exception $e) {
         $pdo->rollBack();
@@ -159,7 +205,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// Customer accounts only for dropdowns
+// Customer accounts for dropdown
 $customerAccounts = $pdo->query("
     SELECT a.account_id, a.account_number, a.account_type, c.customer_name, ab.balance
     FROM ACCOUNT a
@@ -169,13 +215,35 @@ $customerAccounts = $pdo->query("
     ORDER BY a.account_number
 ")->fetchAll();
 
-// Fetch all transactions with account and customer info
-$transactions = $pdo->query("
-    SELECT th.*, a.account_number, a.account_category,
-        COALESCE(c.customer_name, a.account_name) AS display_name
+// Fetch PENDING transactions grouped by reference (for authorisation panel)
+$pendingTransactions = $pdo->query("
+    SELECT th.reference_number, th.transaction_date,
+        MAX(th.transaction_category) AS transaction_category,
+        SUM(CASE WHEN th.transaction_type = 'Debit' THEN th.amount ELSE 0 END) AS debit_amount,
+        MAX(CASE WHEN a.account_category = 'CUSTOMER' THEN c.customer_name END) AS customer_name,
+        MAX(CASE WHEN a.account_category = 'CUSTOMER' THEN a.account_number END) AS account_number,
+        u.username AS initiated_by
     FROM TRANSACTION_HISTORY th
     LEFT JOIN ACCOUNT a ON a.account_id = th.account_id
     LEFT JOIN CUSTOMER c ON c.customer_id = a.customer_id
+    LEFT JOIN USER u ON u.user_id = th.initiated_by
+    WHERE th.status = 'PENDING'
+    GROUP BY th.reference_number, th.transaction_date, u.username
+    ORDER BY th.transaction_date DESC
+")->fetchAll();
+
+// Fetch all completed transactions
+$transactions = $pdo->query("
+    SELECT th.*, a.account_number, a.account_category,
+        COALESCE(c.customer_name, a.account_name) AS display_name,
+        u1.username AS initiated_by_user,
+        u2.username AS authorised_by_user
+    FROM TRANSACTION_HISTORY th
+    LEFT JOIN ACCOUNT a ON a.account_id = th.account_id
+    LEFT JOIN CUSTOMER c ON c.customer_id = a.customer_id
+    LEFT JOIN USER u1 ON u1.user_id = th.initiated_by
+    LEFT JOIN USER u2 ON u2.user_id = th.authorised_by
+    WHERE th.status IN ('COMPLETED', 'REJECTED')
     ORDER BY th.transaction_id DESC
 ")->fetchAll();
 
@@ -190,7 +258,8 @@ require_once __DIR__ . '/../includes/header.php';
     </div>
 <?php endif; ?>
 
-<!-- New Transaction Form -->
+<!-- New Transaction Form: Tellers, Advisors, Loans Officers, Managers, Admins -->
+<?php if (hasRole('Teller')): ?>
 <div class="card mb-4">
     <div class="card-header">Record New Transaction</div>
     <div class="card-body">
@@ -226,7 +295,6 @@ require_once __DIR__ . '/../includes/header.php';
                     <input type="number" step="0.01" min="0.01" name="amount" class="form-control" required>
                 </div>
 
-                <!-- Receiver account: only shown for Internal Transfer -->
                 <div class="col-md-4" id="receiver_field" style="display:none;">
                     <label class="form-label">Receiver Account (NeoBank)</label>
                     <select name="receiver_account_id" class="form-control">
@@ -238,6 +306,12 @@ require_once __DIR__ . '/../includes/header.php';
                             </option>
                         <?php endforeach; ?>
                     </select>
+                </div>
+
+                <div class="col-md-4" id="counterparty_field" style="display:none;">
+                    <label class="form-label" id="counterparty_label">Counterparty Name</label>
+                    <input type="text" name="counterparty_name" class="form-control"
+                           placeholder="Enter name">
                 </div>
 
                 <div class="col-md-4">
@@ -265,20 +339,85 @@ require_once __DIR__ . '/../includes/header.php';
                            placeholder="Brief description of transaction">
                 </div>
             </div>
-            <button type="submit" class="btn btn-primary mt-3">Post Transaction</button>
+            <button type="submit" class="btn btn-primary mt-3">Initiate Transaction</button>
         </form>
     </div>
 </div>
 
-<!-- Show/hide receiver field based on transaction type -->
 <script>
     document.getElementById('transaction_type').addEventListener('change', function () {
-        const receiverField = document.getElementById('receiver_field');
-        receiverField.style.display = this.value === 'Internal Transfer' ? 'block' : 'none';
+        const val = this.value;
+        document.getElementById('receiver_field').style.display =
+            val === 'Internal Transfer' ? 'block' : 'none';
+
+        const counterpartyField = document.getElementById('counterparty_field');
+        const counterpartyLabel = document.getElementById('counterparty_label');
+
+        if (val === 'Inward Transfer') {
+            counterpartyLabel.textContent = 'Sender Name';
+            counterpartyField.style.display = 'block';
+        } else if (val === 'Outward Transfer') {
+            counterpartyLabel.textContent = 'Beneficiary Name';
+            counterpartyField.style.display = 'block';
+        } else {
+            counterpartyField.style.display = 'none';
+        }
     });
 </script>
+<?php endif; ?>
 
-<!-- Transaction List -->
+<!-- Pending Transactions: visible to Branch Managers and Admins only -->
+<?php if (hasRole('Branch Manager') && count($pendingTransactions) > 0): ?>
+<div class="card mb-4 border-warning">
+    <div class="card-header bg-warning text-dark">
+        Pending Transactions Awaiting Authorisation
+    </div>
+    <div class="card-body p-0">
+        <table class="table table-striped mb-0">
+            <thead>
+                <tr>
+                    <th>Reference</th>
+                    <th>Customer</th>
+                    <th>Account</th>
+                    <th>Amount</th>
+                    <th>Category</th>
+                    <th>Initiated By</th>
+                    <th>Date</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php foreach ($pendingTransactions as $ptxn): ?>
+                <tr>
+                    <td><?= htmlspecialchars($ptxn['reference_number']) ?></td>
+                    <td><?= htmlspecialchars($ptxn['customer_name'] ?? '-') ?></td>
+                    <td><?= htmlspecialchars($ptxn['account_number'] ?? '-') ?></td>
+                    <td>&pound;<?= number_format($ptxn['debit_amount'], 2) ?></td>
+                    <td><?= htmlspecialchars($ptxn['transaction_category']) ?></td>
+                    <td><?= htmlspecialchars($ptxn['initiated_by']) ?></td>
+                    <td><?= htmlspecialchars($ptxn['transaction_date']) ?></td>
+                    <td>
+                        <a href="?authorise=<?= urlencode($ptxn['reference_number']) ?>"
+                           class="btn btn-sm btn-success me-1"
+                           onclick="return confirm('Authorise transaction <?= htmlspecialchars($ptxn['reference_number']) ?>?')">
+                            Authorise
+                        </a>
+                        <a href="?reject=<?= urlencode($ptxn['reference_number']) ?>"
+                           class="btn btn-sm btn-danger"
+                           onclick="return confirm('Reject transaction <?= htmlspecialchars($ptxn['reference_number']) ?>? This cannot be undone.')">
+                            Reject
+                        </a>
+                    </td>
+                </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+    </div>
+</div>
+<?php endif; ?>
+
+<!-- Completed Transactions -->
+<h5 class="mb-3">Completed Transactions</h5>
 <table class="table table-striped table-bordered">
     <thead>
         <tr>
@@ -291,6 +430,9 @@ require_once __DIR__ . '/../includes/header.php';
             <th>Category</th>
             <th>Narration</th>
             <th>Date</th>
+            <th>Counterparty</th>
+            <th>Initiated By</th>
+            <th>Authorised By</th>
             <th>Status</th>
         </tr>
     </thead>
@@ -310,8 +452,18 @@ require_once __DIR__ . '/../includes/header.php';
             <td><?= htmlspecialchars($txn['transaction_category'] ?? '-') ?></td>
             <td><?= htmlspecialchars($txn['transaction_narration'] ?? '-') ?></td>
             <td><?= htmlspecialchars($txn['transaction_date']) ?></td>
+            <td><?= htmlspecialchars($txn['counterparty_name'] ?? '-') ?></td>
+            <td><?= htmlspecialchars($txn['initiated_by_user'] ?? '-') ?></td>
+            <td><?= htmlspecialchars($txn['authorised_by_user'] ?? '-') ?></td>
             <td>
-                <span class="badge bg-secondary"><?= htmlspecialchars($txn['status']) ?></span>
+                <?php
+                    $badgeClass = match($txn['status']) {
+                        'COMPLETED' => 'bg-success',
+                        'REJECTED'  => 'bg-danger',
+                        default     => 'bg-secondary'
+                    };
+                ?>
+                <span class="badge <?= $badgeClass ?>"><?= htmlspecialchars($txn['status']) ?></span>
             </td>
         </tr>
         <?php endforeach; ?>
