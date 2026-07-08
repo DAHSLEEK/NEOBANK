@@ -26,7 +26,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $country       = trim($_POST['country']);
 
     if ($customer_id) {
-        // UPDATE existing customer
         $stmt = $pdo->prepare("
             UPDATE CUSTOMER SET customer_name = ?, date_of_birth = ?, customer_type = ?,
                 gender = ?, nationality = ?, occupation = ?, id_type = ?, id_number = ?
@@ -35,7 +34,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([$customer_name, $date_of_birth, $customer_type, $gender,
                          $nationality, $occupation, $id_type, $id_number, $customer_id]);
 
-        // Update or insert CONTACT row for this customer
         $check = $pdo->prepare("SELECT contact_id FROM CONTACT WHERE customer_id = ?");
         $check->execute([$customer_id]);
         if ($check->fetch()) {
@@ -53,7 +51,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         $message = "Customer updated successfully.";
     } else {
-        // INSERT new customer
         $stmt = $pdo->prepare("
             INSERT INTO CUSTOMER (customer_name, date_of_birth, customer_type, gender,
                 nationality, occupation, id_type, id_number)
@@ -72,7 +69,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// Handle Edit link click - load existing customer + contact into the form
+// Handle Edit link click
 if (isset($_GET['edit'])) {
     $stmt = $pdo->prepare("
         SELECT c.*, co.email, co.phone, co.mobile, co.address, co.postcode, co.country
@@ -84,15 +81,49 @@ if (isset($_GET['edit'])) {
     $editCustomer = $stmt->fetch();
 }
 
-// Fetch all customers with their contact info for the table
-$customers = $pdo->query("
+// Search and sort parameters
+$search      = trim($_GET['search'] ?? '');
+$filterType  = $_GET['filter_type'] ?? '';
+$sortCol     = $_GET['sort'] ?? 'customer_id';
+$sortDir     = $_GET['dir'] ?? 'desc';
+
+$allowedSorts = ['customer_id', 'customer_name', 'customer_type', 'date_of_birth', 'nationality'];
+if (!in_array($sortCol, $allowedSorts)) $sortCol = 'customer_id';
+$sortDir = $sortDir === 'asc' ? 'asc' : 'desc';
+$nextDir = $sortDir === 'asc' ? 'desc' : 'asc';
+
+$whereParts = ['1=1'];
+$params     = [];
+
+if ($search !== '') {
+    $whereParts[] = "(c.customer_name LIKE ? OR c.id_number LIKE ? OR c.nationality LIKE ? OR c.occupation LIKE ? OR co.email LIKE ? OR co.phone LIKE ?)";
+    $like = '%' . $search . '%';
+    array_push($params, $like, $like, $like, $like, $like, $like);
+}
+if ($filterType !== '') {
+    $whereParts[] = "c.customer_type = ?";
+    $params[]     = $filterType;
+}
+
+$whereSQL = 'WHERE ' . implode(' AND ', $whereParts);
+
+$custStmt = $pdo->prepare("
     SELECT c.*, co.email, co.phone
     FROM CUSTOMER c
     LEFT JOIN CONTACT co ON co.customer_id = c.customer_id
-    ORDER BY c.customer_id DESC
-")->fetchAll();
+    {$whereSQL}
+    ORDER BY c.{$sortCol} {$sortDir}
+");
+$custStmt->execute($params);
+$customers = $custStmt->fetchAll();
 
 require_once __DIR__ . '/../includes/header.php';
+
+function sortLink(string $col, string $label, string $currentCol, string $nextDir, string $search, string $filterType): string {
+    $arrow  = $currentCol === $col ? ' &#8597;' : '';
+    $params = http_build_query(['sort' => $col, 'dir' => $nextDir, 'search' => $search, 'filter_type' => $filterType]);
+    return "<a href='?{$params}' class='text-decoration-none text-dark'>{$label}{$arrow}</a>";
+}
 ?>
 
 <h1>Customer Management</h1>
@@ -130,11 +161,10 @@ require_once __DIR__ . '/../includes/header.php';
                         <option value="Business" <?= ($editCustomer['customer_type'] ?? '') === 'Business' ? 'selected' : '' ?>>Business</option>
                     </select>
                 </div>
-
                 <div class="col-md-4">
                     <label class="form-label">Gender</label>
                     <select name="gender" class="form-control">
-                        <option value="Male" <?= ($editCustomer['gender'] ?? '') === 'Male' ? 'selected' : '' ?>>Male</option>
+                        <option value="Male"   <?= ($editCustomer['gender'] ?? '') === 'Male'   ? 'selected' : '' ?>>Male</option>
                         <option value="Female" <?= ($editCustomer['gender'] ?? '') === 'Female' ? 'selected' : '' ?>>Female</option>
                     </select>
                 </div>
@@ -148,11 +178,10 @@ require_once __DIR__ . '/../includes/header.php';
                     <input type="text" name="occupation" class="form-control"
                            value="<?= htmlspecialchars($editCustomer['occupation'] ?? '') ?>">
                 </div>
-
                 <div class="col-md-4">
                     <label class="form-label">ID Type</label>
                     <select name="id_type" class="form-control" required>
-                        <option value="Passport" <?= ($editCustomer['id_type'] ?? '') === 'Passport' ? 'selected' : '' ?>>Passport</option>
+                        <option value="Passport"        <?= ($editCustomer['id_type'] ?? '') === 'Passport'        ? 'selected' : '' ?>>Passport</option>
                         <option value="Driving Licence" <?= ($editCustomer['id_type'] ?? '') === 'Driving Licence' ? 'selected' : '' ?>>Driving Licence</option>
                     </select>
                 </div>
@@ -161,7 +190,6 @@ require_once __DIR__ . '/../includes/header.php';
                     <input type="text" name="id_number" class="form-control" required
                            value="<?= htmlspecialchars($editCustomer['id_number'] ?? '') ?>">
                 </div>
-
                 <div class="col-md-4">
                     <label class="form-label">Email</label>
                     <input type="email" name="email" class="form-control"
@@ -177,7 +205,6 @@ require_once __DIR__ . '/../includes/header.php';
                     <input type="text" name="mobile" class="form-control"
                            value="<?= htmlspecialchars($editCustomer['mobile'] ?? '') ?>">
                 </div>
-
                 <div class="col-md-6">
                     <label class="form-label">Address</label>
                     <input type="text" name="address" class="form-control"
@@ -205,26 +232,67 @@ require_once __DIR__ . '/../includes/header.php';
     </div>
 </div>
 
+<!-- Search and Filter -->
+<div class="card mb-3">
+    <div class="card-body">
+        <form method="GET" class="row g-2 align-items-end">
+            <div class="col-md-5">
+                <label class="form-label">Search</label>
+                <input type="text" name="search" class="form-control"
+                       placeholder="Name, ID number, nationality, occupation, email, phone..."
+                       value="<?= htmlspecialchars($search) ?>">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Customer Type</label>
+                <select name="filter_type" class="form-control">
+                    <option value="">All Types</option>
+                    <option value="Personal" <?= $filterType === 'Personal' ? 'selected' : '' ?>>Personal</option>
+                    <option value="Business" <?= $filterType === 'Business' ? 'selected' : '' ?>>Business</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <button type="submit" class="btn btn-primary w-100">Search</button>
+            </div>
+            <div class="col-md-2">
+                <a href="customers.php" class="btn btn-secondary w-100">Reset</a>
+            </div>
+        </form>
+    </div>
+</div>
+
 <!-- Customer List -->
+<h5 class="mb-3">
+    Customers
+    <span class="badge bg-secondary"><?= count($customers) ?> results</span>
+</h5>
 <table class="table table-striped table-bordered">
     <thead>
         <tr>
-            <th>ID</th>
-            <th>Name</th>
-            <th>Type</th>
+            <th><?= sortLink('customer_id',   'ID',       $sortCol, $nextDir, $search, $filterType) ?></th>
+            <th><?= sortLink('customer_name', 'Name',     $sortCol, $nextDir, $search, $filterType) ?></th>
+            <th><?= sortLink('customer_type', 'Type',     $sortCol, $nextDir, $search, $filterType) ?></th>
+            <th><?= sortLink('nationality',   'Nationality', $sortCol, $nextDir, $search, $filterType) ?></th>
             <th>Email</th>
             <th>Phone</th>
+            <th><?= sortLink('date_of_birth', 'Date of Birth', $sortCol, $nextDir, $search, $filterType) ?></th>
             <th>Action</th>
         </tr>
     </thead>
     <tbody>
+        <?php if (count($customers) === 0): ?>
+        <tr>
+            <td colspan="8" class="text-center text-muted">No customers found.</td>
+        </tr>
+        <?php endif; ?>
         <?php foreach ($customers as $cust): ?>
         <tr>
             <td><?= htmlspecialchars($cust['customer_id']) ?></td>
             <td><?= htmlspecialchars($cust['customer_name']) ?></td>
             <td><?= htmlspecialchars($cust['customer_type']) ?></td>
+            <td><?= htmlspecialchars($cust['nationality'] ?? '-') ?></td>
             <td><?= htmlspecialchars($cust['email'] ?? '-') ?></td>
             <td><?= htmlspecialchars($cust['phone'] ?? '-') ?></td>
+            <td><?= htmlspecialchars($cust['date_of_birth']) ?></td>
             <td>
                 <a href="?edit=<?= $cust['customer_id'] ?>" class="btn btn-sm btn-warning">Edit</a>
             </td>
