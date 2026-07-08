@@ -1,5 +1,4 @@
 <?php
-// Suppress errors from showing to users
 error_reporting(0);
 ini_set('display_errors', 0);
 ini_set('log_errors', 1);
@@ -13,12 +12,12 @@ if (isset($_SESSION['user_id'])) {
 }
 
 require_once 'config/db.php';
+require_once 'config/logger.php';
 $pdo = getDBConnection();
 
 $error  = '';
 $reason = $_GET['reason'] ?? '';
 
-// Max failed attempts before lockout
 define('MAX_ATTEMPTS', 5);
 define('LOCKOUT_MINUTES', 15);
 
@@ -45,9 +44,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $password = $_POST['password'];
     $ip       = $_SERVER['REMOTE_ADDR'];
 
-    // Check brute force lockout
     $recentFails = getRecentFailedAttempts($pdo, $username, $ip);
     if ($recentFails >= MAX_ATTEMPTS) {
+        logWarn("LOGIN LOCKED - username '{$username}' from {$ip} exceeded max attempts");
         $error = "Too many failed login attempts. Please try again in " . LOCKOUT_MINUTES . " minutes.";
     } else {
         $stmt = $pdo->prepare("
@@ -65,19 +64,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // Session fixation protection
             session_regenerate_id(true);
 
-            $_SESSION['user_id']      = $user['user_id'];
-            $_SESSION['username']     = $user['username'];
-            $_SESSION['role']         = $user['role'];
-            $_SESSION['full_name']    = $user['full_name'];
-            $_SESSION['branch_id']    = $user['branch_id'];
-            $_SESSION['last_activity']= time();
-            $_SESSION['csrf_token']   = bin2hex(random_bytes(32));
+            $_SESSION['user_id']       = $user['user_id'];
+            $_SESSION['username']      = $user['username'];
+            $_SESSION['role']          = $user['role'];
+            $_SESSION['full_name']     = $user['full_name'];
+            $_SESSION['branch_id']     = $user['branch_id'];
+            $_SESSION['last_activity'] = time();
+            $_SESSION['csrf_token']    = bin2hex(random_bytes(32));
+
+            logInfo("LOGIN SUCCESS for username '{$username}'");
 
             header('Location: /neobank/');
             exit;
         } else {
             logAttempt($pdo, $username, $ip, false);
             $remainingAttempts = MAX_ATTEMPTS - ($recentFails + 1);
+            logWarn("LOGIN FAILED for username '{$username}' from {$ip} - " . max(0, $remainingAttempts) . " attempt(s) remaining");
             $error = "Invalid username or password. " . max(0, $remainingAttempts) . " attempt(s) remaining before lockout.";
         }
     }

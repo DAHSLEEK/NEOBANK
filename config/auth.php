@@ -3,9 +3,12 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
+require_once __DIR__ . '/logger.php';
+
 // Session timeout: 30 minutes of inactivity
 $sessionTimeout = 1800;
 if (isset($_SESSION['last_activity']) && (time() - $_SESSION['last_activity']) > $sessionTimeout) {
+    logWarn("Session timed out after inactivity.");
     session_unset();
     session_destroy();
     header('Location: /neobank/login.php?reason=timeout');
@@ -28,6 +31,7 @@ function verifyCsrf(): void {
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $token = $_POST['csrf_token'] ?? '';
         if (!hash_equals($_SESSION['csrf_token'], $token)) {
+            logWarn("CSRF token mismatch on page: " . ($_GET['page'] ?? 'unknown'));
             http_response_code(403);
             die('
                 <!DOCTYPE html>
@@ -62,6 +66,7 @@ function hasRole(string $minimumRole): bool {
 
 function requireRole(string $minimumRole): void {
     if (!hasRole($minimumRole)) {
+        logWarn("Access denied to page '" . ($_GET['page'] ?? 'unknown') . "' - minimum role required: {$minimumRole}");
         http_response_code(403);
         die('
             <!DOCTYPE html>
@@ -81,3 +86,7 @@ function requireRole(string $minimumRole): void {
 function csrfField(): string {
     return '<input type="hidden" name="csrf_token" value="' . htmlspecialchars($_SESSION['csrf_token']) . '">';
 }
+
+// Log page visit
+$currentPage = $_GET['page'] ?? 'dashboard';
+logInfo("Visited page: {$currentPage}");

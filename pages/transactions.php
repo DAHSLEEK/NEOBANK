@@ -52,6 +52,7 @@ if (isset($_GET['reject']) && hasRole('Branch Manager')) {
         WHERE reference_number = ? AND status = 'PENDING'
     ");
     $stmt->execute([$_SESSION['user_id'], $reference]);
+    logWarn("Transaction REJECTED - Reference: {$reference}");
     $message = "Transaction {$reference} has been rejected.";
 }
 
@@ -87,9 +88,11 @@ if (isset($_GET['authorise']) && hasRole('Branch Manager')) {
                 $upd->execute([$_SESSION['user_id'], $leg['transaction_id']]);
             }
             $pdo->commit();
+            logInfo("Transaction AUTHORISED - Reference: {$reference}");
             $message = "Transaction {$reference} authorised successfully.";
         } catch (Exception $e) {
             $pdo->rollBack();
+            logError("Transaction AUTHORISATION FAILED - Reference: {$reference} - " . $e->getMessage());
             $message = "Error: " . $e->getMessage();
         }
     } else {
@@ -173,10 +176,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         $pdo->commit();
+        logInfo("Transaction INITIATED - Reference: {$reference}, Type: {$transaction_type}, Amount: £{$amount}");
         $message = "Transaction initiated successfully. Reference: {$reference}. Awaiting authorisation.";
 
     } catch (Exception $e) {
         $pdo->rollBack();
+        logError("Transaction INITIATION FAILED - Type: {$transaction_type}, Amount: £{$amount} - " . $e->getMessage());
         $message = "Error: " . $e->getMessage();
     }
 }
