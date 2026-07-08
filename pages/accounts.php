@@ -18,8 +18,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $date_opened     = date('Y-m-d');
 
     if (!$account_id) {
-        // Auto-generate account number: NEO- followed by 8-digit number
-        // Loop ensures generated number does not already exist
         do {
             $maxStmt = $pdo->query("
                 SELECT MAX(CAST(SUBSTRING(account_number, 5) AS UNSIGNED)) AS max_num
@@ -37,7 +35,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if ($account_id) {
-        // UPDATE existing account (account number is never changed)
         $stmt = $pdo->prepare("
             UPDATE ACCOUNT SET customer_id = ?, branch_id = ?,
                 account_type = ?, account_name = ?
@@ -46,7 +43,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([$customer_id, $branch_id, $account_type, $account_name, $account_id]);
         $message = "Account updated successfully.";
     } else {
-        // INSERT new account
         $stmt = $pdo->prepare("
             INSERT INTO ACCOUNT (customer_id, branch_id, account_number, account_type, account_name, date_opened)
             VALUES (?, ?, ?, ?, ?, ?)
@@ -54,14 +50,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([$customer_id, $branch_id, $account_number, $account_type, $account_name, $date_opened]);
         $newAccountId = $pdo->lastInsertId();
 
-        // Create initial balance record
         $stmt = $pdo->prepare("
             INSERT INTO ACCOUNT_BALANCE (account_id, balance, currency, balance_date, total_credit, total_debit)
             VALUES (?, ?, 'GBP', CURDATE(), ?, 0.00)
         ");
         $stmt->execute([$newAccountId, $opening_balance, $opening_balance]);
 
-        // Create initial status record
         $stmt = $pdo->prepare("
             INSERT INTO ACCOUNT_STATUS (account_id, status, status_date, changed_by)
             VALUES (?, 'ACTIVE', NOW(), NULL)
@@ -83,19 +77,63 @@ if (isset($_GET['edit'])) {
 $customers = $pdo->query("SELECT customer_id, customer_name FROM CUSTOMER ORDER BY customer_name")->fetchAll();
 $branches  = $pdo->query("SELECT branch_id, branch_name FROM BRANCH ORDER BY branch_name")->fetchAll();
 
-// Fetch all customer accounts with customer name, branch name, balance, and current status
-$accounts = $pdo->query("
+// Search and sort parameters
+$search       = trim($_GET['search'] ?? '');
+$filterType   = $_GET['filter_type'] ?? '';
+$filterStatus = $_GET['filter_status'] ?? '';
+$sortCol      = $_GET['sort'] ?? 'account_id';
+$sortDir      = $_GET['dir'] ?? 'desc';
+
+$allowedSorts = ['account_id', 'account_number', 'customer_name', 'account_type', 'balance', 'date_opened'];
+if (!in_array($sortCol, $allowedSorts)) $sortCol = 'account_id';
+$sortDir = $sortDir === 'asc' ? 'asc' : 'desc';
+$nextDir = $sortDir === 'asc' ? 'desc' : 'asc';
+
+$whereParts = ["a.account_category = 'CUSTOMER'"];
+$params     = [];
+
+if ($search !== '') {
+    $whereParts[] = "(a.account_number LIKE ? OR c.customer_name LIKE ? OR a.account_name LIKE ?)";
+    $like = '%' . $search . '%';
+    array_push($params, $like, $like, $like);
+}
+if ($filterType !== '') {
+    $whereParts[] = "a.account_type = ?";
+    $params[]     = $filterType;
+}
+if ($filterStatus !== '') {
+    $whereParts[] = "(SELECT status FROM ACCOUNT_STATUS WHERE account_id = a.account_id ORDER BY status_date DESC LIMIT 1) = ?";
+    $params[]     = $filterStatus;
+}
+
+$whereSQL = 'WHERE ' . implode(' AND ', $whereParts);
+
+$sortExpression = match($sortCol) {
+    'customer_name' => 'c.customer_name',
+    'balance'       => 'bal.balance',
+    default         => "a.{$sortCol}"
+};
+
+$accStmt = $pdo->prepare("
     SELECT a.*, c.customer_name, b.branch_name, bal.balance,
         (SELECT status FROM ACCOUNT_STATUS WHERE account_id = a.account_id ORDER BY status_date DESC LIMIT 1) AS current_status
     FROM ACCOUNT a
     LEFT JOIN CUSTOMER c ON c.customer_id = a.customer_id
     LEFT JOIN BRANCH b ON b.branch_id = a.branch_id
     LEFT JOIN ACCOUNT_BALANCE bal ON bal.account_id = a.account_id
-    WHERE a.account_category = 'CUSTOMER'
-    ORDER BY a.account_id DESC
-")->fetchAll();
+    {$whereSQL}
+    ORDER BY {$sortExpression} {$sortDir}
+");
+$accStmt->execute($params);
+$accounts = $accStmt->fetchAll();
 
 require_once __DIR__ . '/../includes/header.php';
+
+function sortLink(string $col, string $label, string $currentCol, string $nextDir, string $search, string $filterType, string $filterStatus): string {
+    $arrow  = $currentCol === $col ? ' &#8597;' : '';
+    $params = http_build_query(['sort' => $col, 'dir' => $nextDir, 'search' => $search, 'filter_type' => $filterType, 'filter_status' => $filterStatus]);
+    return "<a href='?{$params}' class='text-decoration-none text-dark'>{$label}{$arrow}</a>";
+}
 ?>
 
 <h1>Account Management</h1>
@@ -185,21 +223,68 @@ require_once __DIR__ . '/../includes/header.php';
     </div>
 </div>
 
+<!-- Search and Filter -->
+<div class="card mb-3">
+    <div class="card-body">
+        <form method="GET" class="row g-2 align-items-end">
+            <div class="col-md-4">
+                <label class="form-label">Search</label>
+                <input type="text" name="search" class="form-control"
+                       placeholder="Account number, customer name, account name..."
+                       value="<?= htmlspecialchars($search) ?>">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Account Type</label>
+                <select name="filter_type" class="form-control">
+                    <option value="">All Types</option>
+                    <option value="Current"  <?= $filterType === 'Current'  ? 'selected' : '' ?>>Current</option>
+                    <option value="Savings"  <?= $filterType === 'Savings'  ? 'selected' : '' ?>>Savings</option>
+                    <option value="Business" <?= $filterType === 'Business' ? 'selected' : '' ?>>Business</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Status</label>
+                <select name="filter_status" class="form-control">
+                    <option value="">All Statuses</option>
+                    <option value="ACTIVE"    <?= $filterStatus === 'ACTIVE'    ? 'selected' : '' ?>>Active</option>
+                    <option value="SUSPENDED" <?= $filterStatus === 'SUSPENDED' ? 'selected' : '' ?>>Suspended</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <button type="submit" class="btn btn-primary w-100">Search</button>
+            </div>
+            <div class="col-md-2">
+                <a href="accounts.php" class="btn btn-secondary w-100">Reset</a>
+            </div>
+        </form>
+    </div>
+</div>
+
 <!-- Account List -->
+<h5 class="mb-3">
+    Accounts
+    <span class="badge bg-secondary"><?= count($accounts) ?> results</span>
+</h5>
 <table class="table table-striped table-bordered">
     <thead>
         <tr>
-            <th>ID</th>
-            <th>Account No.</th>
-            <th>Customer</th>
+            <th><?= sortLink('account_id',     'ID',          $sortCol, $nextDir, $search, $filterType, $filterStatus) ?></th>
+            <th><?= sortLink('account_number', 'Account No.', $sortCol, $nextDir, $search, $filterType, $filterStatus) ?></th>
+            <th><?= sortLink('customer_name',  'Customer',    $sortCol, $nextDir, $search, $filterType, $filterStatus) ?></th>
             <th>Branch</th>
-            <th>Type</th>
-            <th>Balance</th>
+            <th><?= sortLink('account_type',   'Type',        $sortCol, $nextDir, $search, $filterType, $filterStatus) ?></th>
+            <th><?= sortLink('balance',        'Balance',     $sortCol, $nextDir, $search, $filterType, $filterStatus) ?></th>
+            <th><?= sortLink('date_opened',    'Date Opened', $sortCol, $nextDir, $search, $filterType, $filterStatus) ?></th>
             <th>Status</th>
             <th>Action</th>
         </tr>
     </thead>
     <tbody>
+        <?php if (count($accounts) === 0): ?>
+        <tr>
+            <td colspan="9" class="text-center text-muted">No accounts found.</td>
+        </tr>
+        <?php endif; ?>
         <?php foreach ($accounts as $acc): ?>
         <tr>
             <td><?= htmlspecialchars($acc['account_id']) ?></td>
@@ -208,6 +293,7 @@ require_once __DIR__ . '/../includes/header.php';
             <td><?= htmlspecialchars($acc['branch_name'] ?? '-') ?></td>
             <td><?= htmlspecialchars($acc['account_type']) ?></td>
             <td>&pound;<?= number_format($acc['balance'] ?? 0, 2) ?></td>
+            <td><?= htmlspecialchars($acc['date_opened']) ?></td>
             <td>
                 <?php
                     $status = $acc['current_status'] ?? 'UNKNOWN';
