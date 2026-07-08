@@ -1,59 +1,40 @@
 <?php
+// Suppress errors from showing to users
+error_reporting(0);
+ini_set('display_errors', 0);
+ini_set('log_errors', 1);
+ini_set('error_log', __DIR__ . '/logs/error.log');
+
 require_once 'config/auth.php';
-require_once 'includes/header.php';
-?>
+require_once 'config/db.php';
+$pdo = getDBConnection();
 
-<h1>Welcome to NeoBank, <?= htmlspecialchars($_SESSION['full_name']) ?></h1>
-<p class="text-muted">You are logged in as <strong><?= htmlspecialchars($_SESSION['role']) ?></strong>.</p>
+// Verify CSRF on every POST
+verifyCsrf();
 
-<div class="row mt-4">
-    <div class="col-md-4 mb-3">
-        <div class="card text-white bg-dark">
-            <div class="card-body">
-                <h5 class="card-title">Customers</h5>
-                <p class="card-text">View and manage customer records.</p>
-                <a href="/neobank/pages/customers.php" class="btn btn-light btn-sm">Go</a>
-            </div>
-        </div>
-    </div>
-    <div class="col-md-4 mb-3">
-        <div class="card text-white bg-dark">
-            <div class="card-body">
-                <h5 class="card-title">Accounts</h5>
-                <p class="card-text">Open and manage customer accounts.</p>
-                <a href="/neobank/pages/accounts.php" class="btn btn-light btn-sm">Go</a>
-            </div>
-        </div>
-    </div>
-    <div class="col-md-4 mb-3">
-        <div class="card text-white bg-dark">
-            <div class="card-body">
-                <h5 class="card-title">Transactions</h5>
-                <p class="card-text">Process and authorise transactions.</p>
-                <a href="/neobank/pages/transactions.php" class="btn btn-light btn-sm">Go</a>
-            </div>
-        </div>
-    </div>
-    <?php if (in_array($_SESSION['role'], ['Admin', 'Branch Manager', 'Compliance Officer'])): ?>
-    <div class="col-md-4 mb-3">
-        <div class="card text-white bg-secondary">
-            <div class="card-body">
-                <h5 class="card-title">Branches</h5>
-                <p class="card-text">View and manage branch records.</p>
-                <a href="/neobank/pages/branches.php" class="btn btn-light btn-sm">Go</a>
-            </div>
-        </div>
-    </div>
-    <div class="col-md-4 mb-3">
-        <div class="card text-white bg-secondary">
-            <div class="card-body">
-                <h5 class="card-title">Employees</h5>
-                <p class="card-text">View and manage employee records.</p>
-                <a href="/neobank/pages/employees.php" class="btn btn-light btn-sm">Go</a>
-            </div>
-        </div>
-    </div>
-    <?php endif; ?>
-</div>
+$page = $_GET['page'] ?? 'dashboard';
 
-<?php require_once 'includes/footer.php'; ?>
+$allowedPages = [
+    'dashboard'    => ['minRole' => 'Teller',             'file' => 'pages/dashboard.php'],
+    'customers'    => ['minRole' => 'Teller',             'file' => 'pages/customers.php'],
+    'accounts'     => ['minRole' => 'Teller',             'file' => 'pages/accounts.php'],
+    'transactions' => ['minRole' => 'Teller',             'file' => 'pages/transactions.php'],
+    'branches'     => ['minRole' => 'Compliance Officer', 'file' => 'pages/branches.php'],
+    'employees'    => ['minRole' => 'Compliance Officer', 'file' => 'pages/employees.php'],
+];
+
+if (!array_key_exists($page, $allowedPages)) {
+    $page = 'dashboard';
+}
+
+$pageConfig = $allowedPages[$page];
+
+if (!hasRole($pageConfig['minRole'])) {
+    http_response_code(403);
+    require_once 'includes/header.php';
+    echo '<div class="alert alert-danger"><strong>Access Denied.</strong> You do not have permission to view this page.</div>';
+    require_once 'includes/footer.php';
+    exit;
+}
+
+require_once $pageConfig['file'];

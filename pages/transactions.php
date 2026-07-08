@@ -1,12 +1,9 @@
 <?php
-require_once __DIR__ . '/../config/auth.php';
-requireRole('Teller');
 require_once __DIR__ . '/../config/db.php';
 $pdo = getDBConnection();
 
 $message = '';
 
-// Helper function: post one leg of a double-entry transaction
 function postLeg(PDO $pdo, int $accountId, string $type, float $amount, string $reference, string $category, string $narration, int $initiatedBy, ?string $counterpartyName = null): void {
     $stmt = $pdo->prepare("
         INSERT INTO TRANSACTION_HISTORY
@@ -17,7 +14,6 @@ function postLeg(PDO $pdo, int $accountId, string $type, float $amount, string $
     $stmt->execute([$accountId, $type, $amount, $reference, $category, $narration, $counterpartyName, $initiatedBy]);
 }
 
-// Helper function: update balance for an account
 function updateBalance(PDO $pdo, int $accountId, string $type, float $amount): void {
     $balStmt = $pdo->prepare("SELECT balance_id, balance, total_credit, total_debit FROM ACCOUNT_BALANCE WHERE account_id = ?");
     $balStmt->execute([$accountId]);
@@ -41,7 +37,6 @@ function updateBalance(PDO $pdo, int $accountId, string $type, float $amount): v
     $updStmt->execute([$newBalance, $newTotalCredit, $newTotalDebit, $bal['balance_id']]);
 }
 
-// Helper: generate unique reference number
 function generateReference(PDO $pdo): string {
     $datePart = date('Ymd');
     $unique   = strtoupper(substr(uniqid(), -6));
@@ -86,8 +81,7 @@ if (isset($_GET['authorise']) && hasRole('Branch Manager')) {
                 }
                 updateBalance($pdo, $leg['account_id'], $leg['transaction_type'], $leg['amount']);
                 $upd = $pdo->prepare("
-                    UPDATE TRANSACTION_HISTORY
-                    SET status = 'COMPLETED', authorised_by = ?
+                    UPDATE TRANSACTION_HISTORY SET status = 'COMPLETED', authorised_by = ?
                     WHERE transaction_id = ?
                 ");
                 $upd->execute([$_SESSION['user_id'], $leg['transaction_id']]);
@@ -105,13 +99,14 @@ if (isset($_GET['authorise']) && hasRole('Branch Manager')) {
 
 // Handle new transaction submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $transaction_type    = $_POST['transaction_type'];
-    $account_id          = (int) $_POST['account_id'];
-    $amount              = (float) $_POST['amount'];
-    $category            = $_POST['transaction_category'];
-    $narration           = trim($_POST['transaction_narration']);
-    $counterpartyName    = trim($_POST['counterparty_name'] ?? '');
-    $initiatedBy         = $_SESSION['user_id'];
+    verifyCsrf();
+    $transaction_type = $_POST['transaction_type'];
+    $account_id       = (int) $_POST['account_id'];
+    $amount           = (float) $_POST['amount'];
+    $category         = $_POST['transaction_category'];
+    $narration        = trim($_POST['transaction_narration']);
+    $counterpartyName = trim($_POST['counterparty_name'] ?? '');
+    $initiatedBy      = $_SESSION['user_id'];
 
     $accStmt = $pdo->prepare("
         SELECT a.account_id, a.branch_id, ab.balance
@@ -162,12 +157,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             case 'Internal Transfer':
                 $receiver_account_id = (int) ($_POST['receiver_account_id'] ?? 0);
-                if (!$receiver_account_id) {
-                    throw new Exception("Please select a receiver account for internal transfers.");
-                }
-                if ($receiver_account_id === $account_id) {
-                    throw new Exception("Sender and receiver accounts cannot be the same.");
-                }
+                if (!$receiver_account_id) throw new Exception("Please select a receiver account for internal transfers.");
+                if ($receiver_account_id === $account_id) throw new Exception("Sender and receiver accounts cannot be the same.");
                 postLeg($pdo, $account_id,          'Debit',  $amount, $reference, $category, 'Internal transfer out - ' . $narration, $initiatedBy);
                 postLeg($pdo, $receiver_account_id, 'Credit', $amount, $reference, $category, 'Internal transfer in - '  . $narration, $initiatedBy);
                 break;
@@ -190,12 +181,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// ---------------------------------------------------------------
 // Transaction detail view
-// ---------------------------------------------------------------
 $detailTxn = null;
 if (isset($_GET['detail'])) {
-    $ref       = $_GET['detail'];
+    $ref = $_GET['detail'];
     $detailStmt = $pdo->prepare("
         SELECT th.*,
             a.account_number, a.account_category, a.account_name,
@@ -203,10 +192,10 @@ if (isset($_GET['detail'])) {
             u1.username AS initiated_by_user,
             u2.username AS authorised_by_user
         FROM TRANSACTION_HISTORY th
-        LEFT JOIN ACCOUNT a  ON a.account_id   = th.account_id
-        LEFT JOIN CUSTOMER c ON c.customer_id  = a.customer_id
-        LEFT JOIN USER u1    ON u1.user_id     = th.initiated_by
-        LEFT JOIN USER u2    ON u2.user_id     = th.authorised_by
+        LEFT JOIN ACCOUNT a  ON a.account_id  = th.account_id
+        LEFT JOIN CUSTOMER c ON c.customer_id = a.customer_id
+        LEFT JOIN USER u1    ON u1.user_id    = th.initiated_by
+        LEFT JOIN USER u2    ON u2.user_id    = th.authorised_by
         WHERE th.reference_number = ?
         ORDER BY th.transaction_id ASC
     ");
@@ -214,22 +203,19 @@ if (isset($_GET['detail'])) {
     $detailTxn = $detailStmt->fetchAll();
 }
 
-// ---------------------------------------------------------------
-// Search and sort parameters
-// ---------------------------------------------------------------
-$search     = trim($_GET['search'] ?? '');
-$dateFrom   = $_GET['date_from'] ?? '';
-$dateTo     = $_GET['date_to'] ?? '';
+// Search and sort
+$search       = trim($_GET['search'] ?? '');
+$dateFrom     = $_GET['date_from'] ?? '';
+$dateTo       = $_GET['date_to'] ?? '';
 $filterStatus = $_GET['filter_status'] ?? '';
-$sortCol    = $_GET['sort'] ?? 'transaction_id';
-$sortDir    = $_GET['dir'] ?? 'desc';
+$sortCol      = $_GET['sort'] ?? 'transaction_id';
+$sortDir      = $_GET['dir'] ?? 'desc';
 
 $allowedSorts = ['transaction_id', 'reference_number', 'amount', 'transaction_date', 'status'];
 if (!in_array($sortCol, $allowedSorts)) $sortCol = 'transaction_id';
 $sortDir = $sortDir === 'asc' ? 'asc' : 'desc';
 $nextDir = $sortDir === 'asc' ? 'desc' : 'asc';
 
-// Build WHERE clause
 $whereParts = ["th.status IN ('COMPLETED', 'REJECTED')"];
 $params     = [];
 
@@ -259,17 +245,16 @@ $txnStmt = $pdo->prepare("
         u1.username AS initiated_by_user,
         u2.username AS authorised_by_user
     FROM TRANSACTION_HISTORY th
-    LEFT JOIN ACCOUNT a  ON a.account_id   = th.account_id
-    LEFT JOIN CUSTOMER c ON c.customer_id  = a.customer_id
-    LEFT JOIN USER u1    ON u1.user_id     = th.initiated_by
-    LEFT JOIN USER u2    ON u2.user_id     = th.authorised_by
+    LEFT JOIN ACCOUNT a  ON a.account_id  = th.account_id
+    LEFT JOIN CUSTOMER c ON c.customer_id = a.customer_id
+    LEFT JOIN USER u1    ON u1.user_id    = th.initiated_by
+    LEFT JOIN USER u2    ON u2.user_id    = th.authorised_by
     {$whereSQL}
     ORDER BY th.{$sortCol} {$sortDir}
 ");
 $txnStmt->execute($params);
 $transactions = $txnStmt->fetchAll();
 
-// Customer accounts for dropdown
 $customerAccounts = $pdo->query("
     SELECT a.account_id, a.account_number, a.account_type, c.customer_name, ab.balance
     FROM ACCOUNT a
@@ -279,7 +264,6 @@ $customerAccounts = $pdo->query("
     ORDER BY a.account_number
 ")->fetchAll();
 
-// Pending transactions for authorisation panel
 $pendingTransactions = $pdo->query("
     SELECT th.reference_number, th.transaction_date,
         MAX(th.transaction_category) AS transaction_category,
@@ -298,11 +282,10 @@ $pendingTransactions = $pdo->query("
 
 require_once __DIR__ . '/../includes/header.php';
 
-// Sort link helper
 function sortLink(string $col, string $label, string $currentCol, string $nextDir, string $search, string $filterStatus, string $dateFrom, string $dateTo): string {
-    $arrow = $currentCol === $col ? ' &#8597;' : '';
-    $params = http_build_query(['sort' => $col, 'dir' => $nextDir, 'search' => $search, 'filter_status' => $filterStatus, 'date_from' => $dateFrom, 'date_to' => $dateTo]);
-    return "<a href='?{$params}' class='text-decoration-none text-dark'>{$label}{$arrow}</a>";
+    $arrow  = $currentCol === $col ? ' &#8597;' : '';
+    $params = http_build_query(['page' => 'transactions', 'sort' => $col, 'dir' => $nextDir, 'search' => $search, 'filter_status' => $filterStatus, 'date_from' => $dateFrom, 'date_to' => $dateTo]);
+    return "<a href='/neobank/?{$params}' class='text-decoration-none text-dark'>{$label}{$arrow}</a>";
 }
 ?>
 
@@ -314,28 +297,20 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
     </div>
 <?php endif; ?>
 
-<!-- Transaction Detail Modal -->
+<!-- Transaction Detail -->
 <?php if ($detailTxn): ?>
 <div class="card mb-4 border-info">
     <div class="card-header bg-info text-white d-flex justify-content-between align-items-center">
         <span>Transaction Detail: <?= htmlspecialchars($_GET['detail']) ?></span>
-        <a href="transactions.php" class="btn btn-sm btn-light">Close</a>
+        <a href="/neobank/?page=transactions" class="btn btn-sm btn-light">Close</a>
     </div>
     <div class="card-body p-0">
         <table class="table table-bordered mb-0">
             <thead>
                 <tr>
-                    <th>Leg</th>
-                    <th>Account</th>
-                    <th>Name</th>
-                    <th>Type</th>
-                    <th>Amount</th>
-                    <th>Narration</th>
-                    <th>Counterparty</th>
-                    <th>Date</th>
-                    <th>Status</th>
-                    <th>Initiated By</th>
-                    <th>Authorised By</th>
+                    <th>Leg</th><th>Account</th><th>Name</th><th>Type</th>
+                    <th>Amount</th><th>Narration</th><th>Counterparty</th>
+                    <th>Date</th><th>Status</th><th>Initiated By</th><th>Authorised By</th>
                 </tr>
             </thead>
             <tbody>
@@ -379,7 +354,8 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
 <div class="card mb-4">
     <div class="card-header">Record New Transaction</div>
     <div class="card-body">
-        <form method="POST">
+        <form method="POST" action="/neobank/?page=transactions">
+            <?= csrfField() ?>
             <div class="row g-3">
                 <div class="col-md-4">
                     <label class="form-label">Transaction Type</label>
@@ -410,7 +386,6 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
                     <label class="form-label">Amount (GBP)</label>
                     <input type="number" step="0.01" min="0.01" name="amount" class="form-control" required>
                 </div>
-
                 <div class="col-md-4" id="receiver_field" style="display:none;">
                     <label class="form-label">Receiver Account (NeoBank)</label>
                     <select name="receiver_account_id" class="form-control">
@@ -423,12 +398,10 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
                         <?php endforeach; ?>
                     </select>
                 </div>
-
                 <div class="col-md-4" id="counterparty_field" style="display:none;">
                     <label class="form-label" id="counterparty_label">Counterparty Name</label>
                     <input type="text" name="counterparty_name" class="form-control" placeholder="Enter name">
                 </div>
-
                 <div class="col-md-4">
                     <label class="form-label">Category</label>
                     <select name="transaction_category" class="form-control">
@@ -458,12 +431,9 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
 <script>
     document.getElementById('transaction_type').addEventListener('change', function () {
         const val = this.value;
-        document.getElementById('receiver_field').style.display =
-            val === 'Internal Transfer' ? 'block' : 'none';
-
+        document.getElementById('receiver_field').style.display = val === 'Internal Transfer' ? 'block' : 'none';
         const counterpartyField = document.getElementById('counterparty_field');
         const counterpartyLabel = document.getElementById('counterparty_label');
-
         if (val === 'Inward Transfer') {
             counterpartyLabel.textContent = 'Sender Name';
             counterpartyField.style.display = 'block';
@@ -480,28 +450,20 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
 <!-- Pending Transactions -->
 <?php if (hasRole('Branch Manager') && count($pendingTransactions) > 0): ?>
 <div class="card mb-4 border-warning">
-    <div class="card-header bg-warning text-dark">
-        Pending Transactions Awaiting Authorisation
-    </div>
+    <div class="card-header bg-warning text-dark">Pending Transactions Awaiting Authorisation</div>
     <div class="card-body p-0">
         <table class="table table-striped mb-0">
             <thead>
                 <tr>
-                    <th>Reference</th>
-                    <th>Customer</th>
-                    <th>Account</th>
-                    <th>Amount</th>
-                    <th>Category</th>
-                    <th>Initiated By</th>
-                    <th>Date</th>
-                    <th>Action</th>
+                    <th>Reference</th><th>Customer</th><th>Account</th>
+                    <th>Amount</th><th>Category</th><th>Initiated By</th><th>Date</th><th>Action</th>
                 </tr>
             </thead>
             <tbody>
                 <?php foreach ($pendingTransactions as $ptxn): ?>
                 <tr>
                     <td>
-                        <a href="?detail=<?= urlencode($ptxn['reference_number']) ?>">
+                        <a href="/neobank/?page=transactions&detail=<?= urlencode($ptxn['reference_number']) ?>">
                             <?= htmlspecialchars($ptxn['reference_number']) ?>
                         </a>
                     </td>
@@ -512,12 +474,12 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
                     <td><?= htmlspecialchars($ptxn['initiated_by']) ?></td>
                     <td><?= htmlspecialchars($ptxn['transaction_date']) ?></td>
                     <td>
-                        <a href="?authorise=<?= urlencode($ptxn['reference_number']) ?>"
+                        <a href="/neobank/?page=transactions&authorise=<?= urlencode($ptxn['reference_number']) ?>"
                            class="btn btn-sm btn-success me-1"
                            onclick="return confirm('Authorise transaction <?= htmlspecialchars($ptxn['reference_number']) ?>?')">
                             Authorise
                         </a>
-                        <a href="?reject=<?= urlencode($ptxn['reference_number']) ?>"
+                        <a href="/neobank/?page=transactions&reject=<?= urlencode($ptxn['reference_number']) ?>"
                            class="btn btn-sm btn-danger"
                            onclick="return confirm('Reject transaction <?= htmlspecialchars($ptxn['reference_number']) ?>? This cannot be undone.')">
                             Reject
@@ -534,7 +496,8 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
 <!-- Search and Filter -->
 <div class="card mb-3">
     <div class="card-body">
-        <form method="GET" class="row g-2 align-items-end">
+        <form method="GET" action="/neobank/" class="row g-2 align-items-end">
+            <input type="hidden" name="page" value="transactions">
             <div class="col-md-3">
                 <label class="form-label">Search</label>
                 <input type="text" name="search" class="form-control"
@@ -561,41 +524,36 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
                 <button type="submit" class="btn btn-primary w-100">Search</button>
             </div>
             <div class="col-md-1">
-                <a href="transactions.php" class="btn btn-secondary w-100">Reset</a>
+                <a href="/neobank/?page=transactions" class="btn btn-secondary w-100">Reset</a>
             </div>
         </form>
     </div>
 </div>
 
-<!-- Completed / Rejected Transactions -->
-<h5 class="mb-3">
-    Transactions
-    <span class="badge bg-secondary"><?= count($transactions) ?> results</span>
-</h5>
+<!-- Transactions List -->
+<h5 class="mb-3">Transactions <span class="badge bg-secondary"><?= count($transactions) ?> results</span></h5>
 <table class="table table-striped table-bordered">
     <thead>
         <tr>
-            <th><?= sortLink('transaction_id', 'ID', $sortCol, $nextDir, $search, $filterStatus, $dateFrom, $dateTo) ?></th>
+            <th><?= sortLink('transaction_id',   'ID',        $sortCol, $nextDir, $search, $filterStatus, $dateFrom, $dateTo) ?></th>
             <th><?= sortLink('reference_number', 'Reference', $sortCol, $nextDir, $search, $filterStatus, $dateFrom, $dateTo) ?></th>
             <th>Account</th>
             <th>Name</th>
             <th>Type</th>
-            <th><?= sortLink('amount', 'Amount', $sortCol, $nextDir, $search, $filterStatus, $dateFrom, $dateTo) ?></th>
+            <th><?= sortLink('amount',           'Amount',    $sortCol, $nextDir, $search, $filterStatus, $dateFrom, $dateTo) ?></th>
             <th>Category</th>
             <th>Narration</th>
             <th>Counterparty</th>
-            <th><?= sortLink('transaction_date', 'Date', $sortCol, $nextDir, $search, $filterStatus, $dateFrom, $dateTo) ?></th>
+            <th><?= sortLink('transaction_date', 'Date',      $sortCol, $nextDir, $search, $filterStatus, $dateFrom, $dateTo) ?></th>
             <th>Initiated By</th>
             <th>Authorised By</th>
-            <th><?= sortLink('status', 'Status', $sortCol, $nextDir, $search, $filterStatus, $dateFrom, $dateTo) ?></th>
+            <th><?= sortLink('status',           'Status',    $sortCol, $nextDir, $search, $filterStatus, $dateFrom, $dateTo) ?></th>
             <th>Detail</th>
         </tr>
     </thead>
     <tbody>
         <?php if (count($transactions) === 0): ?>
-        <tr>
-            <td colspan="14" class="text-center text-muted">No transactions found.</td>
-        </tr>
+        <tr><td colspan="14" class="text-center text-muted">No transactions found.</td></tr>
         <?php endif; ?>
         <?php foreach ($transactions as $txn): ?>
         <tr>
@@ -626,10 +584,8 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
                 <span class="badge <?= $badgeClass ?>"><?= htmlspecialchars($txn['status']) ?></span>
             </td>
             <td>
-                <a href="?detail=<?= urlencode($txn['reference_number']) ?>"
-                   class="btn btn-sm btn-info text-white">
-                    View
-                </a>
+                <a href="/neobank/?page=transactions&detail=<?= urlencode($txn['reference_number']) ?>"
+                   class="btn btn-sm btn-info text-white">View</a>
             </td>
         </tr>
         <?php endforeach; ?>

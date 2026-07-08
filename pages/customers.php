@@ -1,6 +1,4 @@
 <?php
-require_once __DIR__ . '/../config/auth.php';
-requireRole('Teller');
 require_once __DIR__ . '/../config/db.php';
 $pdo = getDBConnection();
 
@@ -9,6 +7,7 @@ $message = '';
 
 // Handle Add / Update form submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    verifyCsrf();
     $customer_id   = $_POST['customer_id'] ?? null;
     $customer_name = trim($_POST['customer_name']);
     $date_of_birth = $_POST['date_of_birth'];
@@ -82,10 +81,10 @@ if (isset($_GET['edit'])) {
 }
 
 // Search and sort parameters
-$search      = trim($_GET['search'] ?? '');
-$filterType  = $_GET['filter_type'] ?? '';
-$sortCol     = $_GET['sort'] ?? 'customer_id';
-$sortDir     = $_GET['dir'] ?? 'desc';
+$search     = trim($_GET['search'] ?? '');
+$filterType = $_GET['filter_type'] ?? '';
+$sortCol    = $_GET['sort'] ?? 'customer_id';
+$sortDir    = $_GET['dir'] ?? 'desc';
 
 $allowedSorts = ['customer_id', 'customer_name', 'customer_type', 'date_of_birth', 'nationality'];
 if (!in_array($sortCol, $allowedSorts)) $sortCol = 'customer_id';
@@ -121,8 +120,8 @@ require_once __DIR__ . '/../includes/header.php';
 
 function sortLink(string $col, string $label, string $currentCol, string $nextDir, string $search, string $filterType): string {
     $arrow  = $currentCol === $col ? ' &#8597;' : '';
-    $params = http_build_query(['sort' => $col, 'dir' => $nextDir, 'search' => $search, 'filter_type' => $filterType]);
-    return "<a href='?{$params}' class='text-decoration-none text-dark'>{$label}{$arrow}</a>";
+    $params = http_build_query(['page' => 'customers', 'sort' => $col, 'dir' => $nextDir, 'search' => $search, 'filter_type' => $filterType]);
+    return "<a href='/neobank/?{$params}' class='text-decoration-none text-dark'>{$label}{$arrow}</a>";
 }
 ?>
 
@@ -138,7 +137,8 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
         <?= $editCustomer ? 'Edit Customer' : 'Add New Customer' ?>
     </div>
     <div class="card-body">
-        <form method="POST">
+        <form method="POST" action="/neobank/?page=customers">
+            <?= csrfField() ?>
             <?php if ($editCustomer): ?>
                 <input type="hidden" name="customer_id" value="<?= htmlspecialchars($editCustomer['customer_id']) ?>">
             <?php endif; ?>
@@ -226,7 +226,7 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
                 <?= $editCustomer ? 'Update Customer' : 'Add Customer' ?>
             </button>
             <?php if ($editCustomer): ?>
-                <a href="customers.php" class="btn btn-secondary mt-3">Cancel</a>
+                <a href="/neobank/?page=customers" class="btn btn-secondary mt-3">Cancel</a>
             <?php endif; ?>
         </form>
     </div>
@@ -235,7 +235,8 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
 <!-- Search and Filter -->
 <div class="card mb-3">
     <div class="card-body">
-        <form method="GET" class="row g-2 align-items-end">
+        <form method="GET" action="/neobank/" class="row g-2 align-items-end">
+            <input type="hidden" name="page" value="customers">
             <div class="col-md-5">
                 <label class="form-label">Search</label>
                 <input type="text" name="search" class="form-control"
@@ -254,7 +255,7 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
                 <button type="submit" class="btn btn-primary w-100">Search</button>
             </div>
             <div class="col-md-2">
-                <a href="customers.php" class="btn btn-secondary w-100">Reset</a>
+                <a href="/neobank/?page=customers" class="btn btn-secondary w-100">Reset</a>
             </div>
         </form>
     </div>
@@ -268,21 +269,19 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
 <table class="table table-striped table-bordered">
     <thead>
         <tr>
-            <th><?= sortLink('customer_id',   'ID',       $sortCol, $nextDir, $search, $filterType) ?></th>
-            <th><?= sortLink('customer_name', 'Name',     $sortCol, $nextDir, $search, $filterType) ?></th>
-            <th><?= sortLink('customer_type', 'Type',     $sortCol, $nextDir, $search, $filterType) ?></th>
-            <th><?= sortLink('nationality',   'Nationality', $sortCol, $nextDir, $search, $filterType) ?></th>
+            <th><?= sortLink('customer_id',   'ID',           $sortCol, $nextDir, $search, $filterType) ?></th>
+            <th><?= sortLink('customer_name', 'Name',         $sortCol, $nextDir, $search, $filterType) ?></th>
+            <th><?= sortLink('customer_type', 'Type',         $sortCol, $nextDir, $search, $filterType) ?></th>
+            <th><?= sortLink('nationality',   'Nationality',  $sortCol, $nextDir, $search, $filterType) ?></th>
             <th>Email</th>
             <th>Phone</th>
-            <th><?= sortLink('date_of_birth', 'Date of Birth', $sortCol, $nextDir, $search, $filterType) ?></th>
+            <th><?= sortLink('date_of_birth', 'Date of Birth',$sortCol, $nextDir, $search, $filterType) ?></th>
             <th>Action</th>
         </tr>
     </thead>
     <tbody>
         <?php if (count($customers) === 0): ?>
-        <tr>
-            <td colspan="8" class="text-center text-muted">No customers found.</td>
-        </tr>
+        <tr><td colspan="8" class="text-center text-muted">No customers found.</td></tr>
         <?php endif; ?>
         <?php foreach ($customers as $cust): ?>
         <tr>
@@ -294,7 +293,7 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
             <td><?= htmlspecialchars($cust['phone'] ?? '-') ?></td>
             <td><?= htmlspecialchars($cust['date_of_birth']) ?></td>
             <td>
-                <a href="?edit=<?= $cust['customer_id'] ?>" class="btn btn-sm btn-warning">Edit</a>
+                <a href="/neobank/?page=customers&edit=<?= $cust['customer_id'] ?>" class="btn btn-sm btn-warning">Edit</a>
             </td>
         </tr>
         <?php endforeach; ?>

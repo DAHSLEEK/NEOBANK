@@ -1,14 +1,12 @@
 <?php
-require_once __DIR__ . '/../config/auth.php';
-requireRole('Teller');
 require_once __DIR__ . '/../config/db.php';
 $pdo = getDBConnection();
 
 $editAccount = null;
 $message = '';
 
-// Handle Add / Update form submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    verifyCsrf();
     $account_id      = $_POST['account_id'] ?? null;
     $customer_id     = $_POST['customer_id'];
     $branch_id       = $_POST['branch_id'];
@@ -25,12 +23,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ");
             $nextId = ($maxStmt->fetch()['max_num'] ?? 0) + 1;
             $candidate_number = 'NEO-' . str_pad($nextId, 8, '0', STR_PAD_LEFT);
-
             $checkStmt = $pdo->prepare("SELECT COUNT(*) FROM ACCOUNT WHERE account_number = ?");
             $checkStmt->execute([$candidate_number]);
             $exists = $checkStmt->fetchColumn() > 0;
         } while ($exists);
-
         $account_number = $candidate_number;
     }
 
@@ -61,23 +57,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             VALUES (?, 'ACTIVE', NOW(), NULL)
         ");
         $stmt->execute([$newAccountId]);
-
         $message = "Account opened successfully.";
     }
 }
 
-// Handle Edit link click
 if (isset($_GET['edit'])) {
     $stmt = $pdo->prepare("SELECT * FROM ACCOUNT WHERE account_id = ?");
     $stmt->execute([$_GET['edit']]);
     $editAccount = $stmt->fetch();
 }
 
-// Dropdown data
 $customers = $pdo->query("SELECT customer_id, customer_name FROM CUSTOMER ORDER BY customer_name")->fetchAll();
 $branches  = $pdo->query("SELECT branch_id, branch_name FROM BRANCH ORDER BY branch_name")->fetchAll();
 
-// Search and sort parameters
 $search       = trim($_GET['search'] ?? '');
 $filterType   = $_GET['filter_type'] ?? '';
 $filterStatus = $_GET['filter_status'] ?? '';
@@ -107,7 +99,6 @@ if ($filterStatus !== '') {
 }
 
 $whereSQL = 'WHERE ' . implode(' AND ', $whereParts);
-
 $sortExpression = match($sortCol) {
     'customer_name' => 'c.customer_name',
     'balance'       => 'bal.balance',
@@ -131,8 +122,8 @@ require_once __DIR__ . '/../includes/header.php';
 
 function sortLink(string $col, string $label, string $currentCol, string $nextDir, string $search, string $filterType, string $filterStatus): string {
     $arrow  = $currentCol === $col ? ' &#8597;' : '';
-    $params = http_build_query(['sort' => $col, 'dir' => $nextDir, 'search' => $search, 'filter_type' => $filterType, 'filter_status' => $filterStatus]);
-    return "<a href='?{$params}' class='text-decoration-none text-dark'>{$label}{$arrow}</a>";
+    $params = http_build_query(['page' => 'accounts', 'sort' => $col, 'dir' => $nextDir, 'search' => $search, 'filter_type' => $filterType, 'filter_status' => $filterStatus]);
+    return "<a href='/neobank/?{$params}' class='text-decoration-none text-dark'>{$label}{$arrow}</a>";
 }
 ?>
 
@@ -143,16 +134,14 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
 <?php endif; ?>
 
 <div class="mb-3">
-    <a href="customers.php" class="btn btn-outline-primary">+ New Customer</a>
+    <a href="/neobank/?page=customers" class="btn btn-outline-primary">+ New Customer</a>
 </div>
 
-<!-- Add / Edit Form -->
 <div class="card mb-4">
-    <div class="card-header">
-        <?= $editAccount ? 'Edit Account' : 'Open New Account' ?>
-    </div>
+    <div class="card-header"><?= $editAccount ? 'Edit Account' : 'Open New Account' ?></div>
     <div class="card-body">
-        <form method="POST">
+        <form method="POST" action="/neobank/?page=accounts">
+            <?= csrfField() ?>
             <?php if ($editAccount): ?>
                 <input type="hidden" name="account_id" value="<?= htmlspecialchars($editAccount['account_id']) ?>">
             <?php endif; ?>
@@ -190,7 +179,6 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
                         <option value="Business" <?= ($editAccount['account_type'] ?? '') === 'Business' ? 'selected' : '' ?>>Business</option>
                     </select>
                 </div>
-
                 <?php if ($editAccount): ?>
                 <div class="col-md-4">
                     <label class="form-label">Account Number</label>
@@ -198,13 +186,11 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
                            value="<?= htmlspecialchars($editAccount['account_number']) ?>" disabled>
                 </div>
                 <?php endif; ?>
-
                 <div class="col-md-4">
                     <label class="form-label">Account Name</label>
                     <input type="text" name="account_name" class="form-control"
                            value="<?= htmlspecialchars($editAccount['account_name'] ?? '') ?>">
                 </div>
-
                 <?php if (!$editAccount): ?>
                 <div class="col-md-4">
                     <label class="form-label">Opening Balance (GBP)</label>
@@ -217,16 +203,16 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
                 <?= $editAccount ? 'Update Account' : 'Open Account' ?>
             </button>
             <?php if ($editAccount): ?>
-                <a href="accounts.php" class="btn btn-secondary mt-3">Cancel</a>
+                <a href="/neobank/?page=accounts" class="btn btn-secondary mt-3">Cancel</a>
             <?php endif; ?>
         </form>
     </div>
 </div>
 
-<!-- Search and Filter -->
 <div class="card mb-3">
     <div class="card-body">
-        <form method="GET" class="row g-2 align-items-end">
+        <form method="GET" action="/neobank/" class="row g-2 align-items-end">
+            <input type="hidden" name="page" value="accounts">
             <div class="col-md-4">
                 <label class="form-label">Search</label>
                 <input type="text" name="search" class="form-control"
@@ -254,17 +240,13 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
                 <button type="submit" class="btn btn-primary w-100">Search</button>
             </div>
             <div class="col-md-2">
-                <a href="accounts.php" class="btn btn-secondary w-100">Reset</a>
+                <a href="/neobank/?page=accounts" class="btn btn-secondary w-100">Reset</a>
             </div>
         </form>
     </div>
 </div>
 
-<!-- Account List -->
-<h5 class="mb-3">
-    Accounts
-    <span class="badge bg-secondary"><?= count($accounts) ?> results</span>
-</h5>
+<h5 class="mb-3">Accounts <span class="badge bg-secondary"><?= count($accounts) ?> results</span></h5>
 <table class="table table-striped table-bordered">
     <thead>
         <tr>
@@ -281,9 +263,7 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
     </thead>
     <tbody>
         <?php if (count($accounts) === 0): ?>
-        <tr>
-            <td colspan="9" class="text-center text-muted">No accounts found.</td>
-        </tr>
+        <tr><td colspan="9" class="text-center text-muted">No accounts found.</td></tr>
         <?php endif; ?>
         <?php foreach ($accounts as $acc): ?>
         <tr>
@@ -306,7 +286,7 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
                 <span class="badge <?= $badgeClass ?>"><?= htmlspecialchars($status) ?></span>
             </td>
             <td>
-                <a href="?edit=<?= $acc['account_id'] ?>" class="btn btn-sm btn-warning">Edit</a>
+                <a href="/neobank/?page=accounts&edit=<?= $acc['account_id'] ?>" class="btn btn-sm btn-warning">Edit</a>
             </td>
         </tr>
         <?php endforeach; ?>

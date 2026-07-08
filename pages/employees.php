@@ -1,14 +1,12 @@
 <?php
-require_once __DIR__ . '/../config/auth.php';
-requireRole('Compliance Officer');
 require_once __DIR__ . '/../config/db.php';
 $pdo = getDBConnection();
 
 $editEmployee = null;
 $message = '';
 
-// Handle Add / Update form submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    verifyCsrf();
     $employee_id = $_POST['employee_id'] ?? null;
     $branch_id   = $_POST['branch_id'];
     $full_name   = trim($_POST['full_name']);
@@ -22,46 +20,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $country     = trim($_POST['country'] ?? 'United Kingdom');
 
     if ($employee_id) {
-        $stmt = $pdo->prepare("
-            UPDATE EMPLOYEE SET branch_id = ?, full_name = ?, role = ?, hire_date = ?
-            WHERE employee_id = ?
-        ");
+        $stmt = $pdo->prepare("UPDATE EMPLOYEE SET branch_id = ?, full_name = ?, role = ?, hire_date = ? WHERE employee_id = ?");
         $stmt->execute([$branch_id, $full_name, $role, $hire_date, $employee_id]);
 
         $check = $pdo->prepare("SELECT contact_id FROM CONTACT WHERE employee_id = ?");
         $check->execute([$employee_id]);
         if ($check->fetch()) {
-            $stmt = $pdo->prepare("
-                UPDATE CONTACT SET email = ?, phone = ?, mobile = ?, address = ?, postcode = ?, country = ?
-                WHERE employee_id = ?
-            ");
+            $stmt = $pdo->prepare("UPDATE CONTACT SET email = ?, phone = ?, mobile = ?, address = ?, postcode = ?, country = ? WHERE employee_id = ?");
             $stmt->execute([$email, $phone, $mobile, $address, $postcode, $country, $employee_id]);
         } else {
-            $stmt = $pdo->prepare("
-                INSERT INTO CONTACT (employee_id, email, phone, mobile, address, postcode, country)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ");
+            $stmt = $pdo->prepare("INSERT INTO CONTACT (employee_id, email, phone, mobile, address, postcode, country) VALUES (?, ?, ?, ?, ?, ?, ?)");
             $stmt->execute([$employee_id, $email, $phone, $mobile, $address, $postcode, $country]);
         }
         $message = "Employee updated successfully.";
     } else {
-        $stmt = $pdo->prepare("
-            INSERT INTO EMPLOYEE (branch_id, full_name, role, hire_date)
-            VALUES (?, ?, ?, ?)
-        ");
+        $stmt = $pdo->prepare("INSERT INTO EMPLOYEE (branch_id, full_name, role, hire_date) VALUES (?, ?, ?, ?)");
         $stmt->execute([$branch_id, $full_name, $role, $hire_date]);
         $newEmployeeId = $pdo->lastInsertId();
 
-        $stmt = $pdo->prepare("
-            INSERT INTO CONTACT (employee_id, email, phone, mobile, address, postcode, country)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ");
+        $stmt = $pdo->prepare("INSERT INTO CONTACT (employee_id, email, phone, mobile, address, postcode, country) VALUES (?, ?, ?, ?, ?, ?, ?)");
         $stmt->execute([$newEmployeeId, $email, $phone, $mobile, $address, $postcode, $country]);
         $message = "Employee added successfully.";
     }
 }
 
-// Handle status toggle
 if (isset($_GET['toggle_status'])) {
     $toggle_id = (int) $_GET['toggle_status'];
     $current = $pdo->prepare("SELECT status FROM EMPLOYEE WHERE employee_id = ?");
@@ -72,7 +54,6 @@ if (isset($_GET['toggle_status'])) {
     $message = "Employee status updated to {$newStatus}.";
 }
 
-// Handle Edit link click
 if (isset($_GET['edit'])) {
     $stmt = $pdo->prepare("
         SELECT e.*, co.email, co.phone, co.mobile, co.address, co.postcode, co.country
@@ -84,10 +65,8 @@ if (isset($_GET['edit'])) {
     $editEmployee = $stmt->fetch();
 }
 
-// Dropdown data
 $branches = $pdo->query("SELECT branch_id, branch_name FROM BRANCH ORDER BY branch_name")->fetchAll();
 
-// Search and sort parameters
 $search       = trim($_GET['search'] ?? '');
 $filterRole   = $_GET['filter_role'] ?? '';
 $filterStatus = $_GET['filter_status'] ?? '';
@@ -133,8 +112,8 @@ require_once __DIR__ . '/../includes/header.php';
 
 function sortLink(string $col, string $label, string $currentCol, string $nextDir, string $search, string $filterRole, string $filterStatus): string {
     $arrow  = $currentCol === $col ? ' &#8597;' : '';
-    $params = http_build_query(['sort' => $col, 'dir' => $nextDir, 'search' => $search, 'filter_role' => $filterRole, 'filter_status' => $filterStatus]);
-    return "<a href='?{$params}' class='text-decoration-none text-dark'>{$label}{$arrow}</a>";
+    $params = http_build_query(['page' => 'employees', 'sort' => $col, 'dir' => $nextDir, 'search' => $search, 'filter_role' => $filterRole, 'filter_status' => $filterStatus]);
+    return "<a href='/neobank/?{$params}' class='text-decoration-none text-dark'>{$label}{$arrow}</a>";
 }
 ?>
 
@@ -146,13 +125,11 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
     </div>
 <?php endif; ?>
 
-<!-- Add / Edit Form -->
 <div class="card mb-4">
-    <div class="card-header">
-        <?= $editEmployee ? 'Edit Employee' : 'Add New Employee' ?>
-    </div>
+    <div class="card-header"><?= $editEmployee ? 'Edit Employee' : 'Add New Employee' ?></div>
     <div class="card-body">
-        <form method="POST">
+        <form method="POST" action="/neobank/?page=employees">
+            <?= csrfField() ?>
             <?php if ($editEmployee): ?>
                 <input type="hidden" name="employee_id" value="<?= htmlspecialchars($editEmployee['employee_id']) ?>">
             <?php endif; ?>
@@ -227,16 +204,16 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
                 <?= $editEmployee ? 'Update Employee' : 'Add Employee' ?>
             </button>
             <?php if ($editEmployee): ?>
-                <a href="employees.php" class="btn btn-secondary mt-3">Cancel</a>
+                <a href="/neobank/?page=employees" class="btn btn-secondary mt-3">Cancel</a>
             <?php endif; ?>
         </form>
     </div>
 </div>
 
-<!-- Search and Filter -->
 <div class="card mb-3">
     <div class="card-body">
-        <form method="GET" class="row g-2 align-items-end">
+        <form method="GET" action="/neobank/" class="row g-2 align-items-end">
+            <input type="hidden" name="page" value="employees">
             <div class="col-md-4">
                 <label class="form-label">Search</label>
                 <input type="text" name="search" class="form-control"
@@ -267,17 +244,13 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
                 <button type="submit" class="btn btn-primary w-100">Search</button>
             </div>
             <div class="col-md-2">
-                <a href="employees.php" class="btn btn-secondary w-100">Reset</a>
+                <a href="/neobank/?page=employees" class="btn btn-secondary w-100">Reset</a>
             </div>
         </form>
     </div>
 </div>
 
-<!-- Employee List -->
-<h5 class="mb-3">
-    Employees
-    <span class="badge bg-secondary"><?= count($employees) ?> results</span>
-</h5>
+<h5 class="mb-3">Employees <span class="badge bg-secondary"><?= count($employees) ?> results</span></h5>
 <table class="table table-striped table-bordered">
     <thead>
         <tr>
@@ -294,9 +267,7 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
     </thead>
     <tbody>
         <?php if (count($employees) === 0): ?>
-        <tr>
-            <td colspan="9" class="text-center text-muted">No employees found.</td>
-        </tr>
+        <tr><td colspan="9" class="text-center text-muted">No employees found.</td></tr>
         <?php endif; ?>
         <?php foreach ($employees as $emp): ?>
         <tr>
@@ -315,8 +286,8 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
                 <span class="badge <?= $empBadge ?>"><?= htmlspecialchars($empStatus) ?></span>
             </td>
             <td>
-                <a href="?edit=<?= $emp['employee_id'] ?>" class="btn btn-sm btn-warning me-1">Edit</a>
-                <a href="?toggle_status=<?= $emp['employee_id'] ?>"
+                <a href="/neobank/?page=employees&edit=<?= $emp['employee_id'] ?>" class="btn btn-sm btn-warning me-1">Edit</a>
+                <a href="/neobank/?page=employees&toggle_status=<?= $emp['employee_id'] ?>"
                    class="btn btn-sm <?= ($emp['status'] ?? 'ACTIVE') === 'ACTIVE' ? 'btn-secondary' : 'btn-success' ?>"
                    onclick="return confirm('<?= ($emp['status'] ?? 'ACTIVE') === 'ACTIVE' ? 'Deactivate' : 'Activate' ?> this employee?')">
                     <?= ($emp['status'] ?? 'ACTIVE') === 'ACTIVE' ? 'Deactivate' : 'Activate' ?>

@@ -1,14 +1,12 @@
 <?php
-require_once __DIR__ . '/../config/auth.php';
-requireRole('Compliance Officer');
 require_once __DIR__ . '/../config/db.php';
 $pdo = getDBConnection();
 
 $editBranch = null;
 $message = '';
 
-// Handle Add / Update form submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    verifyCsrf();
     $branch_id   = $_POST['branch_id'] ?? null;
     $branch_name = trim($_POST['branch_name']);
     $branch_code = trim($_POST['branch_code']);
@@ -19,46 +17,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $country     = trim($_POST['country'] ?? 'United Kingdom');
 
     if ($branch_id) {
-        $stmt = $pdo->prepare("
-            UPDATE BRANCH SET branch_name = ?, branch_code = ?
-            WHERE branch_id = ?
-        ");
+        $stmt = $pdo->prepare("UPDATE BRANCH SET branch_name = ?, branch_code = ? WHERE branch_id = ?");
         $stmt->execute([$branch_name, $branch_code, $branch_id]);
 
         $check = $pdo->prepare("SELECT contact_id FROM CONTACT WHERE branch_id = ?");
         $check->execute([$branch_id]);
         if ($check->fetch()) {
-            $stmt = $pdo->prepare("
-                UPDATE CONTACT SET email = ?, phone = ?, address = ?, postcode = ?, country = ?
-                WHERE branch_id = ?
-            ");
+            $stmt = $pdo->prepare("UPDATE CONTACT SET email = ?, phone = ?, address = ?, postcode = ?, country = ? WHERE branch_id = ?");
             $stmt->execute([$email, $phone, $address, $postcode, $country, $branch_id]);
         } else {
-            $stmt = $pdo->prepare("
-                INSERT INTO CONTACT (branch_id, email, phone, address, postcode, country)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ");
+            $stmt = $pdo->prepare("INSERT INTO CONTACT (branch_id, email, phone, address, postcode, country) VALUES (?, ?, ?, ?, ?, ?)");
             $stmt->execute([$branch_id, $email, $phone, $address, $postcode, $country]);
         }
         $message = "Branch updated successfully.";
     } else {
-        $stmt = $pdo->prepare("
-            INSERT INTO BRANCH (branch_name, branch_code)
-            VALUES (?, ?)
-        ");
+        $stmt = $pdo->prepare("INSERT INTO BRANCH (branch_name, branch_code) VALUES (?, ?)");
         $stmt->execute([$branch_name, $branch_code]);
         $newBranchId = $pdo->lastInsertId();
 
-        $stmt = $pdo->prepare("
-            INSERT INTO CONTACT (branch_id, email, phone, address, postcode, country)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ");
+        $stmt = $pdo->prepare("INSERT INTO CONTACT (branch_id, email, phone, address, postcode, country) VALUES (?, ?, ?, ?, ?, ?)");
         $stmt->execute([$newBranchId, $email, $phone, $address, $postcode, $country]);
         $message = "Branch added successfully.";
     }
 }
 
-// Handle status toggle
 if (isset($_GET['toggle_status'])) {
     $toggle_id = (int) $_GET['toggle_status'];
     $current = $pdo->prepare("SELECT status FROM BRANCH WHERE branch_id = ?");
@@ -69,7 +51,6 @@ if (isset($_GET['toggle_status'])) {
     $message = "Branch status updated to {$newStatus}.";
 }
 
-// Handle Edit link click
 if (isset($_GET['edit'])) {
     $stmt = $pdo->prepare("
         SELECT b.*, co.email, co.phone, co.address, co.postcode, co.country
@@ -81,7 +62,6 @@ if (isset($_GET['edit'])) {
     $editBranch = $stmt->fetch();
 }
 
-// Search and sort parameters
 $search       = trim($_GET['search'] ?? '');
 $filterStatus = $_GET['filter_status'] ?? '';
 $sortCol      = $_GET['sort'] ?? 'branch_id';
@@ -108,8 +88,7 @@ if ($filterStatus !== '') {
 $whereSQL = 'WHERE ' . implode(' AND ', $whereParts);
 
 $branchStmt = $pdo->prepare("
-    SELECT b.*,
-        co.email, co.phone, co.address,
+    SELECT b.*, co.email, co.phone, co.address,
         COUNT(DISTINCT e.employee_id) AS employee_count,
         COUNT(DISTINCT a.account_id) AS account_count
     FROM BRANCH b
@@ -127,8 +106,8 @@ require_once __DIR__ . '/../includes/header.php';
 
 function sortLink(string $col, string $label, string $currentCol, string $nextDir, string $search, string $filterStatus): string {
     $arrow  = $currentCol === $col ? ' &#8597;' : '';
-    $params = http_build_query(['sort' => $col, 'dir' => $nextDir, 'search' => $search, 'filter_status' => $filterStatus]);
-    return "<a href='?{$params}' class='text-decoration-none text-dark'>{$label}{$arrow}</a>";
+    $params = http_build_query(['page' => 'branches', 'sort' => $col, 'dir' => $nextDir, 'search' => $search, 'filter_status' => $filterStatus]);
+    return "<a href='/neobank/?{$params}' class='text-decoration-none text-dark'>{$label}{$arrow}</a>";
 }
 ?>
 
@@ -140,13 +119,11 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
     </div>
 <?php endif; ?>
 
-<!-- Add / Edit Form -->
 <div class="card mb-4">
-    <div class="card-header">
-        <?= $editBranch ? 'Edit Branch' : 'Add New Branch' ?>
-    </div>
+    <div class="card-header"><?= $editBranch ? 'Edit Branch' : 'Add New Branch' ?></div>
     <div class="card-body">
-        <form method="POST">
+        <form method="POST" action="/neobank/?page=branches">
+            <?= csrfField() ?>
             <?php if ($editBranch): ?>
                 <input type="hidden" name="branch_id" value="<?= htmlspecialchars($editBranch['branch_id']) ?>">
             <?php endif; ?>
@@ -193,16 +170,16 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
                 <?= $editBranch ? 'Update Branch' : 'Add Branch' ?>
             </button>
             <?php if ($editBranch): ?>
-                <a href="branches.php" class="btn btn-secondary mt-3">Cancel</a>
+                <a href="/neobank/?page=branches" class="btn btn-secondary mt-3">Cancel</a>
             <?php endif; ?>
         </form>
     </div>
 </div>
 
-<!-- Search and Filter -->
 <div class="card mb-3">
     <div class="card-body">
-        <form method="GET" class="row g-2 align-items-end">
+        <form method="GET" action="/neobank/" class="row g-2 align-items-end">
+            <input type="hidden" name="page" value="branches">
             <div class="col-md-5">
                 <label class="form-label">Search</label>
                 <input type="text" name="search" class="form-control"
@@ -221,17 +198,13 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
                 <button type="submit" class="btn btn-primary w-100">Search</button>
             </div>
             <div class="col-md-2">
-                <a href="branches.php" class="btn btn-secondary w-100">Reset</a>
+                <a href="/neobank/?page=branches" class="btn btn-secondary w-100">Reset</a>
             </div>
         </form>
     </div>
 </div>
 
-<!-- Branch List -->
-<h5 class="mb-3">
-    Branches
-    <span class="badge bg-secondary"><?= count($branches) ?> results</span>
-</h5>
+<h5 class="mb-3">Branches <span class="badge bg-secondary"><?= count($branches) ?> results</span></h5>
 <table class="table table-striped table-bordered">
     <thead>
         <tr>
@@ -249,9 +222,7 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
     </thead>
     <tbody>
         <?php if (count($branches) === 0): ?>
-        <tr>
-            <td colspan="10" class="text-center text-muted">No branches found.</td>
-        </tr>
+        <tr><td colspan="10" class="text-center text-muted">No branches found.</td></tr>
         <?php endif; ?>
         <?php foreach ($branches as $branch): ?>
         <tr>
@@ -271,8 +242,8 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
             </td>
             <td><?= htmlspecialchars($branch['time_created']) ?></td>
             <td>
-                <a href="?edit=<?= $branch['branch_id'] ?>" class="btn btn-sm btn-warning me-1">Edit</a>
-                <a href="?toggle_status=<?= $branch['branch_id'] ?>"
+                <a href="/neobank/?page=branches&edit=<?= $branch['branch_id'] ?>" class="btn btn-sm btn-warning me-1">Edit</a>
+                <a href="/neobank/?page=branches&toggle_status=<?= $branch['branch_id'] ?>"
                    class="btn btn-sm <?= ($branch['status'] ?? 'ACTIVE') === 'ACTIVE' ? 'btn-secondary' : 'btn-success' ?>"
                    onclick="return confirm('<?= ($branch['status'] ?? 'ACTIVE') === 'ACTIVE' ? 'Deactivate' : 'Activate' ?> this branch?')">
                     <?= ($branch['status'] ?? 'ACTIVE') === 'ACTIVE' ? 'Deactivate' : 'Activate' ?>
