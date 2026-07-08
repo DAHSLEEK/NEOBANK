@@ -28,7 +28,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ");
         $stmt->execute([$branch_id, $full_name, $role, $hire_date, $employee_id]);
 
-        // Update or insert CONTACT row for this employee
         $check = $pdo->prepare("SELECT contact_id FROM CONTACT WHERE employee_id = ?");
         $check->execute([$employee_id]);
         if ($check->fetch()) {
@@ -58,7 +57,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             VALUES (?, ?, ?, ?, ?, ?, ?)
         ");
         $stmt->execute([$newEmployeeId, $email, $phone, $mobile, $address, $postcode, $country]);
-
         $message = "Employee added successfully.";
     }
 }
@@ -70,7 +68,6 @@ if (isset($_GET['toggle_status'])) {
     $current->execute([$toggle_id]);
     $currentStatus = $current->fetchColumn();
     $newStatus = $currentStatus === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
-
     $pdo->prepare("UPDATE EMPLOYEE SET status = ? WHERE employee_id = ?")->execute([$newStatus, $toggle_id]);
     $message = "Employee status updated to {$newStatus}.";
 }
@@ -90,16 +87,55 @@ if (isset($_GET['edit'])) {
 // Dropdown data
 $branches = $pdo->query("SELECT branch_id, branch_name FROM BRANCH ORDER BY branch_name")->fetchAll();
 
-// Fetch all employees with branch name and contact info
-$employees = $pdo->query("
+// Search and sort parameters
+$search       = trim($_GET['search'] ?? '');
+$filterRole   = $_GET['filter_role'] ?? '';
+$filterStatus = $_GET['filter_status'] ?? '';
+$sortCol      = $_GET['sort'] ?? 'employee_id';
+$sortDir      = $_GET['dir'] ?? 'asc';
+
+$allowedSorts = ['employee_id', 'full_name', 'role', 'hire_date', 'status'];
+if (!in_array($sortCol, $allowedSorts)) $sortCol = 'employee_id';
+$sortDir = $sortDir === 'asc' ? 'asc' : 'desc';
+$nextDir = $sortDir === 'asc' ? 'desc' : 'asc';
+
+$whereParts = ['1=1'];
+$params     = [];
+
+if ($search !== '') {
+    $whereParts[] = "(e.full_name LIKE ? OR b.branch_name LIKE ? OR co.email LIKE ? OR co.phone LIKE ?)";
+    $like = '%' . $search . '%';
+    array_push($params, $like, $like, $like, $like);
+}
+if ($filterRole !== '') {
+    $whereParts[] = "e.role = ?";
+    $params[]     = $filterRole;
+}
+if ($filterStatus !== '') {
+    $whereParts[] = "e.status = ?";
+    $params[]     = $filterStatus;
+}
+
+$whereSQL = 'WHERE ' . implode(' AND ', $whereParts);
+
+$empStmt = $pdo->prepare("
     SELECT e.*, b.branch_name, co.email, co.phone
     FROM EMPLOYEE e
     LEFT JOIN BRANCH b ON b.branch_id = e.branch_id
     LEFT JOIN CONTACT co ON co.employee_id = e.employee_id
-    ORDER BY e.employee_id ASC
-")->fetchAll();
+    {$whereSQL}
+    ORDER BY e.{$sortCol} {$sortDir}
+");
+$empStmt->execute($params);
+$employees = $empStmt->fetchAll();
 
 require_once __DIR__ . '/../includes/header.php';
+
+function sortLink(string $col, string $label, string $currentCol, string $nextDir, string $search, string $filterRole, string $filterStatus): string {
+    $arrow  = $currentCol === $col ? ' &#8597;' : '';
+    $params = http_build_query(['sort' => $col, 'dir' => $nextDir, 'search' => $search, 'filter_role' => $filterRole, 'filter_status' => $filterStatus]);
+    return "<a href='?{$params}' class='text-decoration-none text-dark'>{$label}{$arrow}</a>";
+}
 ?>
 
 <h1>Employee Management</h1>
@@ -197,22 +233,71 @@ require_once __DIR__ . '/../includes/header.php';
     </div>
 </div>
 
+<!-- Search and Filter -->
+<div class="card mb-3">
+    <div class="card-body">
+        <form method="GET" class="row g-2 align-items-end">
+            <div class="col-md-4">
+                <label class="form-label">Search</label>
+                <input type="text" name="search" class="form-control"
+                       placeholder="Name, branch, email, phone..."
+                       value="<?= htmlspecialchars($search) ?>">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Role</label>
+                <select name="filter_role" class="form-control">
+                    <option value="">All Roles</option>
+                    <option value="Branch Manager"    <?= $filterRole === 'Branch Manager'    ? 'selected' : '' ?>>Branch Manager</option>
+                    <option value="Customer Advisor"  <?= $filterRole === 'Customer Advisor'  ? 'selected' : '' ?>>Customer Advisor</option>
+                    <option value="Loans Officer"     <?= $filterRole === 'Loans Officer'     ? 'selected' : '' ?>>Loans Officer</option>
+                    <option value="Compliance Officer"<?= $filterRole === 'Compliance Officer'? 'selected' : '' ?>>Compliance Officer</option>
+                    <option value="Teller"            <?= $filterRole === 'Teller'            ? 'selected' : '' ?>>Teller</option>
+                    <option value="Admin"             <?= $filterRole === 'Admin'             ? 'selected' : '' ?>>Admin</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Status</label>
+                <select name="filter_status" class="form-control">
+                    <option value="">All</option>
+                    <option value="ACTIVE"   <?= $filterStatus === 'ACTIVE'   ? 'selected' : '' ?>>Active</option>
+                    <option value="INACTIVE" <?= $filterStatus === 'INACTIVE' ? 'selected' : '' ?>>Inactive</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <button type="submit" class="btn btn-primary w-100">Search</button>
+            </div>
+            <div class="col-md-2">
+                <a href="employees.php" class="btn btn-secondary w-100">Reset</a>
+            </div>
+        </form>
+    </div>
+</div>
+
 <!-- Employee List -->
+<h5 class="mb-3">
+    Employees
+    <span class="badge bg-secondary"><?= count($employees) ?> results</span>
+</h5>
 <table class="table table-striped table-bordered">
     <thead>
         <tr>
-            <th>ID</th>
-            <th>Full Name</th>
+            <th><?= sortLink('employee_id', 'ID',        $sortCol, $nextDir, $search, $filterRole, $filterStatus) ?></th>
+            <th><?= sortLink('full_name',   'Full Name', $sortCol, $nextDir, $search, $filterRole, $filterStatus) ?></th>
             <th>Branch</th>
-            <th>Role</th>
+            <th><?= sortLink('role',        'Role',      $sortCol, $nextDir, $search, $filterRole, $filterStatus) ?></th>
             <th>Email</th>
             <th>Phone</th>
-            <th>Hire Date</th>
-            <th>Status</th>
+            <th><?= sortLink('hire_date',   'Hire Date', $sortCol, $nextDir, $search, $filterRole, $filterStatus) ?></th>
+            <th><?= sortLink('status',      'Status',    $sortCol, $nextDir, $search, $filterRole, $filterStatus) ?></th>
             <th>Action</th>
         </tr>
     </thead>
     <tbody>
+        <?php if (count($employees) === 0): ?>
+        <tr>
+            <td colspan="9" class="text-center text-muted">No employees found.</td>
+        </tr>
+        <?php endif; ?>
         <?php foreach ($employees as $emp): ?>
         <tr>
             <td><?= htmlspecialchars($emp['employee_id']) ?></td>

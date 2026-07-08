@@ -25,7 +25,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ");
         $stmt->execute([$branch_name, $branch_code, $branch_id]);
 
-        // Update or insert CONTACT row for this branch
         $check = $pdo->prepare("SELECT contact_id FROM CONTACT WHERE branch_id = ?");
         $check->execute([$branch_id]);
         if ($check->fetch()) {
@@ -55,10 +54,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             VALUES (?, ?, ?, ?, ?, ?)
         ");
         $stmt->execute([$newBranchId, $email, $phone, $address, $postcode, $country]);
-
         $message = "Branch added successfully.";
     }
 }
+
 // Handle status toggle
 if (isset($_GET['toggle_status'])) {
     $toggle_id = (int) $_GET['toggle_status'];
@@ -66,10 +65,10 @@ if (isset($_GET['toggle_status'])) {
     $current->execute([$toggle_id]);
     $currentStatus = $current->fetchColumn();
     $newStatus = $currentStatus === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
-
     $pdo->prepare("UPDATE BRANCH SET status = ? WHERE branch_id = ?")->execute([$newStatus, $toggle_id]);
     $message = "Branch status updated to {$newStatus}.";
 }
+
 // Handle Edit link click
 if (isset($_GET['edit'])) {
     $stmt = $pdo->prepare("
@@ -82,19 +81,55 @@ if (isset($_GET['edit'])) {
     $editBranch = $stmt->fetch();
 }
 
-// Fetch all branches with employee count and account count
-$branches = $pdo->query("
+// Search and sort parameters
+$search       = trim($_GET['search'] ?? '');
+$filterStatus = $_GET['filter_status'] ?? '';
+$sortCol      = $_GET['sort'] ?? 'branch_id';
+$sortDir      = $_GET['dir'] ?? 'asc';
+
+$allowedSorts = ['branch_id', 'branch_name', 'branch_code', 'status', 'time_created'];
+if (!in_array($sortCol, $allowedSorts)) $sortCol = 'branch_id';
+$sortDir = $sortDir === 'asc' ? 'asc' : 'desc';
+$nextDir = $sortDir === 'asc' ? 'desc' : 'asc';
+
+$whereParts = ['1=1'];
+$params     = [];
+
+if ($search !== '') {
+    $whereParts[] = "(b.branch_name LIKE ? OR b.branch_code LIKE ? OR co.email LIKE ? OR co.address LIKE ?)";
+    $like = '%' . $search . '%';
+    array_push($params, $like, $like, $like, $like);
+}
+if ($filterStatus !== '') {
+    $whereParts[] = "b.status = ?";
+    $params[]     = $filterStatus;
+}
+
+$whereSQL = 'WHERE ' . implode(' AND ', $whereParts);
+
+$branchStmt = $pdo->prepare("
     SELECT b.*,
+        co.email, co.phone, co.address,
         COUNT(DISTINCT e.employee_id) AS employee_count,
         COUNT(DISTINCT a.account_id) AS account_count
     FROM BRANCH b
+    LEFT JOIN CONTACT co ON co.branch_id = b.branch_id
     LEFT JOIN EMPLOYEE e ON e.branch_id = b.branch_id
     LEFT JOIN ACCOUNT a ON a.branch_id = b.branch_id AND a.account_category = 'CUSTOMER'
-    GROUP BY b.branch_id
-    ORDER BY b.branch_id ASC
-")->fetchAll();
+    {$whereSQL}
+    GROUP BY b.branch_id, co.email, co.phone, co.address
+    ORDER BY b.{$sortCol} {$sortDir}
+");
+$branchStmt->execute($params);
+$branches = $branchStmt->fetchAll();
 
 require_once __DIR__ . '/../includes/header.php';
+
+function sortLink(string $col, string $label, string $currentCol, string $nextDir, string $search, string $filterStatus): string {
+    $arrow  = $currentCol === $col ? ' &#8597;' : '';
+    $params = http_build_query(['sort' => $col, 'dir' => $nextDir, 'search' => $search, 'filter_status' => $filterStatus]);
+    return "<a href='?{$params}' class='text-decoration-none text-dark'>{$label}{$arrow}</a>";
+}
 ?>
 
 <h1>Branch Management</h1>
@@ -164,26 +199,67 @@ require_once __DIR__ . '/../includes/header.php';
     </div>
 </div>
 
+<!-- Search and Filter -->
+<div class="card mb-3">
+    <div class="card-body">
+        <form method="GET" class="row g-2 align-items-end">
+            <div class="col-md-5">
+                <label class="form-label">Search</label>
+                <input type="text" name="search" class="form-control"
+                       placeholder="Branch name, code, email, address..."
+                       value="<?= htmlspecialchars($search) ?>">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Status</label>
+                <select name="filter_status" class="form-control">
+                    <option value="">All</option>
+                    <option value="ACTIVE"   <?= $filterStatus === 'ACTIVE'   ? 'selected' : '' ?>>Active</option>
+                    <option value="INACTIVE" <?= $filterStatus === 'INACTIVE' ? 'selected' : '' ?>>Inactive</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <button type="submit" class="btn btn-primary w-100">Search</button>
+            </div>
+            <div class="col-md-2">
+                <a href="branches.php" class="btn btn-secondary w-100">Reset</a>
+            </div>
+        </form>
+    </div>
+</div>
+
 <!-- Branch List -->
+<h5 class="mb-3">
+    Branches
+    <span class="badge bg-secondary"><?= count($branches) ?> results</span>
+</h5>
 <table class="table table-striped table-bordered">
     <thead>
         <tr>
-            <th>ID</th>
-            <th>Branch Name</th>
-            <th>Branch Code</th>
+            <th><?= sortLink('branch_id',    'ID',          $sortCol, $nextDir, $search, $filterStatus) ?></th>
+            <th><?= sortLink('branch_name',  'Branch Name', $sortCol, $nextDir, $search, $filterStatus) ?></th>
+            <th><?= sortLink('branch_code',  'Code',        $sortCol, $nextDir, $search, $filterStatus) ?></th>
+            <th>Email</th>
+            <th>Phone</th>
             <th>Employees</th>
-            <th>Customer Accounts</th>
-            <th>Status</th>
-            <th>Date Created</th>
+            <th>Accounts</th>
+            <th><?= sortLink('status',       'Status',      $sortCol, $nextDir, $search, $filterStatus) ?></th>
+            <th><?= sortLink('time_created', 'Created',     $sortCol, $nextDir, $search, $filterStatus) ?></th>
             <th>Action</th>
         </tr>
     </thead>
     <tbody>
+        <?php if (count($branches) === 0): ?>
+        <tr>
+            <td colspan="10" class="text-center text-muted">No branches found.</td>
+        </tr>
+        <?php endif; ?>
         <?php foreach ($branches as $branch): ?>
         <tr>
             <td><?= htmlspecialchars($branch['branch_id']) ?></td>
             <td><?= htmlspecialchars($branch['branch_name']) ?></td>
             <td><?= htmlspecialchars($branch['branch_code']) ?></td>
+            <td><?= htmlspecialchars($branch['email'] ?? '-') ?></td>
+            <td><?= htmlspecialchars($branch['phone'] ?? '-') ?></td>
             <td><?= htmlspecialchars($branch['employee_count']) ?></td>
             <td><?= htmlspecialchars($branch['account_count']) ?></td>
             <td>
@@ -197,9 +273,9 @@ require_once __DIR__ . '/../includes/header.php';
             <td>
                 <a href="?edit=<?= $branch['branch_id'] ?>" class="btn btn-sm btn-warning me-1">Edit</a>
                 <a href="?toggle_status=<?= $branch['branch_id'] ?>"
-                   class="btn btn-sm <?= $branch['status'] === 'ACTIVE' ? 'btn-secondary' : 'btn-success' ?>"
-                   onclick="return confirm('<?= $branch['status'] === 'ACTIVE' ? 'Deactivate' : 'Activate' ?> this branch?')">
-                    <?= $branch['status'] === 'ACTIVE' ? 'Deactivate' : 'Activate' ?>
+                   class="btn btn-sm <?= ($branch['status'] ?? 'ACTIVE') === 'ACTIVE' ? 'btn-secondary' : 'btn-success' ?>"
+                   onclick="return confirm('<?= ($branch['status'] ?? 'ACTIVE') === 'ACTIVE' ? 'Deactivate' : 'Activate' ?> this branch?')">
+                    <?= ($branch['status'] ?? 'ACTIVE') === 'ACTIVE' ? 'Deactivate' : 'Activate' ?>
                 </a>
             </td>
         </tr>
