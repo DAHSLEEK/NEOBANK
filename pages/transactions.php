@@ -6,7 +6,7 @@ $pdo = getDBConnection();
 
 $message = '';
 
-// Helper function: post one leg of a double-entry transaction and update balance
+// Helper function: post one leg of a double-entry transaction
 function postLeg(PDO $pdo, int $accountId, string $type, float $amount, string $reference, string $category, string $narration, int $initiatedBy, ?string $counterpartyName = null): void {
     $stmt = $pdo->prepare("
         INSERT INTO TRANSACTION_HISTORY
@@ -48,38 +48,29 @@ function generateReference(PDO $pdo): string {
     return 'TXN-' . $datePart . '-' . $unique;
 }
 
-// Handle rejection of a PENDING transaction group
+// Handle rejection
 if (isset($_GET['reject']) && hasRole('Branch Manager')) {
     $reference = $_GET['reject'];
-
     $stmt = $pdo->prepare("
         UPDATE TRANSACTION_HISTORY
         SET status = 'REJECTED', authorised_by = ?
         WHERE reference_number = ? AND status = 'PENDING'
     ");
     $stmt->execute([$_SESSION['user_id'], $reference]);
-
     $message = "Transaction {$reference} has been rejected.";
 }
 
-// Handle authorisation of a PENDING transaction group (by reference number)
+// Handle authorisation
 if (isset($_GET['authorise']) && hasRole('Branch Manager')) {
-    $reference = $_GET['authorise'];
-
-    // Fetch all legs for this reference
-    $legs = $pdo->prepare("
-        SELECT * FROM TRANSACTION_HISTORY WHERE reference_number = ? AND status = 'PENDING'
-    ");
+    $reference   = $_GET['authorise'];
+    $legs        = $pdo->prepare("SELECT * FROM TRANSACTION_HISTORY WHERE reference_number = ? AND status = 'PENDING'");
     $legs->execute([$reference]);
     $pendingLegs = $legs->fetchAll();
 
     if ($pendingLegs) {
         try {
             $pdo->beginTransaction();
-
             foreach ($pendingLegs as $leg) {
-                // Check sufficient funds for debit legs on CUSTOMER accounts only
-                // Internal accounts (Cash, Payable, Receivable) are allowed to go negative
                 if ($leg['transaction_type'] === 'Debit') {
                     $accChk = $pdo->prepare("
                         SELECT a.account_category, ab.balance
@@ -89,15 +80,11 @@ if (isset($_GET['authorise']) && hasRole('Branch Manager')) {
                     ");
                     $accChk->execute([$leg['account_id']]);
                     $accInfo = $accChk->fetch();
-
                     if ($accInfo['account_category'] === 'CUSTOMER' && $leg['amount'] > $accInfo['balance']) {
                         throw new Exception("Insufficient funds on account ID " . $leg['account_id'] . " at time of authorisation.");
                     }
                 }
-                // Update balance
                 updateBalance($pdo, $leg['account_id'], $leg['transaction_type'], $leg['amount']);
-
-                // Mark as COMPLETED
                 $upd = $pdo->prepare("
                     UPDATE TRANSACTION_HISTORY
                     SET status = 'COMPLETED', authorised_by = ?
@@ -105,7 +92,6 @@ if (isset($_GET['authorise']) && hasRole('Branch Manager')) {
                 ");
                 $upd->execute([$_SESSION['user_id'], $leg['transaction_id']]);
             }
-
             $pdo->commit();
             $message = "Transaction {$reference} authorised successfully.";
         } catch (Exception $e) {
@@ -119,15 +105,14 @@ if (isset($_GET['authorise']) && hasRole('Branch Manager')) {
 
 // Handle new transaction submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $transaction_type = $_POST['transaction_type'];
-    $account_id       = (int) $_POST['account_id'];
-    $amount           = (float) $_POST['amount'];
-    $category         = $_POST['transaction_category'];
-    $narration          = trim($_POST['transaction_narration']);
-    $counterpartyName   = trim($_POST['counterparty_name'] ?? '');
-    $initiatedBy        = $_SESSION['user_id'];
+    $transaction_type    = $_POST['transaction_type'];
+    $account_id          = (int) $_POST['account_id'];
+    $amount              = (float) $_POST['amount'];
+    $category            = $_POST['transaction_category'];
+    $narration           = trim($_POST['transaction_narration']);
+    $counterpartyName    = trim($_POST['counterparty_name'] ?? '');
+    $initiatedBy         = $_SESSION['user_id'];
 
-    // Fetch customer account and branch
     $accStmt = $pdo->prepare("
         SELECT a.account_id, a.branch_id, ab.balance
         FROM ACCOUNT a
@@ -205,6 +190,85 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
+// ---------------------------------------------------------------
+// Transaction detail view
+// ---------------------------------------------------------------
+$detailTxn = null;
+if (isset($_GET['detail'])) {
+    $ref       = $_GET['detail'];
+    $detailStmt = $pdo->prepare("
+        SELECT th.*,
+            a.account_number, a.account_category, a.account_name,
+            COALESCE(c.customer_name, a.account_name) AS display_name,
+            u1.username AS initiated_by_user,
+            u2.username AS authorised_by_user
+        FROM TRANSACTION_HISTORY th
+        LEFT JOIN ACCOUNT a  ON a.account_id   = th.account_id
+        LEFT JOIN CUSTOMER c ON c.customer_id  = a.customer_id
+        LEFT JOIN USER u1    ON u1.user_id     = th.initiated_by
+        LEFT JOIN USER u2    ON u2.user_id     = th.authorised_by
+        WHERE th.reference_number = ?
+        ORDER BY th.transaction_id ASC
+    ");
+    $detailStmt->execute([$ref]);
+    $detailTxn = $detailStmt->fetchAll();
+}
+
+// ---------------------------------------------------------------
+// Search and sort parameters
+// ---------------------------------------------------------------
+$search     = trim($_GET['search'] ?? '');
+$dateFrom   = $_GET['date_from'] ?? '';
+$dateTo     = $_GET['date_to'] ?? '';
+$filterStatus = $_GET['filter_status'] ?? '';
+$sortCol    = $_GET['sort'] ?? 'transaction_id';
+$sortDir    = $_GET['dir'] ?? 'desc';
+
+$allowedSorts = ['transaction_id', 'reference_number', 'amount', 'transaction_date', 'status'];
+if (!in_array($sortCol, $allowedSorts)) $sortCol = 'transaction_id';
+$sortDir = $sortDir === 'asc' ? 'asc' : 'desc';
+$nextDir = $sortDir === 'asc' ? 'desc' : 'asc';
+
+// Build WHERE clause
+$whereParts = ["th.status IN ('COMPLETED', 'REJECTED')"];
+$params     = [];
+
+if ($search !== '') {
+    $whereParts[] = "(th.reference_number LIKE ? OR a.account_number LIKE ? OR c.customer_name LIKE ? OR th.transaction_narration LIKE ? OR th.counterparty_name LIKE ?)";
+    $like = '%' . $search . '%';
+    array_push($params, $like, $like, $like, $like, $like);
+}
+if ($filterStatus !== '') {
+    $whereParts[] = "th.status = ?";
+    $params[]     = $filterStatus;
+}
+if ($dateFrom !== '') {
+    $whereParts[] = "DATE(th.transaction_date) >= ?";
+    $params[]     = $dateFrom;
+}
+if ($dateTo !== '') {
+    $whereParts[] = "DATE(th.transaction_date) <= ?";
+    $params[]     = $dateTo;
+}
+
+$whereSQL = 'WHERE ' . implode(' AND ', $whereParts);
+
+$txnStmt = $pdo->prepare("
+    SELECT th.*, a.account_number, a.account_category,
+        COALESCE(c.customer_name, a.account_name) AS display_name,
+        u1.username AS initiated_by_user,
+        u2.username AS authorised_by_user
+    FROM TRANSACTION_HISTORY th
+    LEFT JOIN ACCOUNT a  ON a.account_id   = th.account_id
+    LEFT JOIN CUSTOMER c ON c.customer_id  = a.customer_id
+    LEFT JOIN USER u1    ON u1.user_id     = th.initiated_by
+    LEFT JOIN USER u2    ON u2.user_id     = th.authorised_by
+    {$whereSQL}
+    ORDER BY th.{$sortCol} {$sortDir}
+");
+$txnStmt->execute($params);
+$transactions = $txnStmt->fetchAll();
+
 // Customer accounts for dropdown
 $customerAccounts = $pdo->query("
     SELECT a.account_id, a.account_number, a.account_type, c.customer_name, ab.balance
@@ -215,7 +279,7 @@ $customerAccounts = $pdo->query("
     ORDER BY a.account_number
 ")->fetchAll();
 
-// Fetch PENDING transactions grouped by reference (for authorisation panel)
+// Pending transactions for authorisation panel
 $pendingTransactions = $pdo->query("
     SELECT th.reference_number, th.transaction_date,
         MAX(th.transaction_category) AS transaction_category,
@@ -224,30 +288,22 @@ $pendingTransactions = $pdo->query("
         MAX(CASE WHEN a.account_category = 'CUSTOMER' THEN a.account_number END) AS account_number,
         u.username AS initiated_by
     FROM TRANSACTION_HISTORY th
-    LEFT JOIN ACCOUNT a ON a.account_id = th.account_id
+    LEFT JOIN ACCOUNT a  ON a.account_id  = th.account_id
     LEFT JOIN CUSTOMER c ON c.customer_id = a.customer_id
-    LEFT JOIN USER u ON u.user_id = th.initiated_by
+    LEFT JOIN USER u     ON u.user_id     = th.initiated_by
     WHERE th.status = 'PENDING'
     GROUP BY th.reference_number, th.transaction_date, u.username
     ORDER BY th.transaction_date DESC
 ")->fetchAll();
 
-// Fetch all completed transactions
-$transactions = $pdo->query("
-    SELECT th.*, a.account_number, a.account_category,
-        COALESCE(c.customer_name, a.account_name) AS display_name,
-        u1.username AS initiated_by_user,
-        u2.username AS authorised_by_user
-    FROM TRANSACTION_HISTORY th
-    LEFT JOIN ACCOUNT a ON a.account_id = th.account_id
-    LEFT JOIN CUSTOMER c ON c.customer_id = a.customer_id
-    LEFT JOIN USER u1 ON u1.user_id = th.initiated_by
-    LEFT JOIN USER u2 ON u2.user_id = th.authorised_by
-    WHERE th.status IN ('COMPLETED', 'REJECTED')
-    ORDER BY th.transaction_id DESC
-")->fetchAll();
-
 require_once __DIR__ . '/../includes/header.php';
+
+// Sort link helper
+function sortLink(string $col, string $label, string $currentCol, string $nextDir, string $search, string $filterStatus, string $dateFrom, string $dateTo): string {
+    $arrow = $currentCol === $col ? ' &#8597;' : '';
+    $params = http_build_query(['sort' => $col, 'dir' => $nextDir, 'search' => $search, 'filter_status' => $filterStatus, 'date_from' => $dateFrom, 'date_to' => $dateTo]);
+    return "<a href='?{$params}' class='text-decoration-none text-dark'>{$label}{$arrow}</a>";
+}
 ?>
 
 <h1>Transaction Management</h1>
@@ -258,7 +314,67 @@ require_once __DIR__ . '/../includes/header.php';
     </div>
 <?php endif; ?>
 
-<!-- New Transaction Form: Tellers, Advisors, Loans Officers, Managers, Admins -->
+<!-- Transaction Detail Modal -->
+<?php if ($detailTxn): ?>
+<div class="card mb-4 border-info">
+    <div class="card-header bg-info text-white d-flex justify-content-between align-items-center">
+        <span>Transaction Detail: <?= htmlspecialchars($_GET['detail']) ?></span>
+        <a href="transactions.php" class="btn btn-sm btn-light">Close</a>
+    </div>
+    <div class="card-body p-0">
+        <table class="table table-bordered mb-0">
+            <thead>
+                <tr>
+                    <th>Leg</th>
+                    <th>Account</th>
+                    <th>Name</th>
+                    <th>Type</th>
+                    <th>Amount</th>
+                    <th>Narration</th>
+                    <th>Counterparty</th>
+                    <th>Date</th>
+                    <th>Status</th>
+                    <th>Initiated By</th>
+                    <th>Authorised By</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php foreach ($detailTxn as $i => $leg): ?>
+                <tr>
+                    <td><?= $i + 1 ?></td>
+                    <td><?= htmlspecialchars($leg['account_number'] ?? '-') ?></td>
+                    <td><?= htmlspecialchars($leg['display_name'] ?? '-') ?></td>
+                    <td>
+                        <span class="badge <?= $leg['transaction_type'] === 'Credit' ? 'bg-success' : 'bg-danger' ?>">
+                            <?= htmlspecialchars($leg['transaction_type']) ?>
+                        </span>
+                    </td>
+                    <td>&pound;<?= number_format($leg['amount'], 2) ?></td>
+                    <td><?= htmlspecialchars($leg['transaction_narration'] ?? '-') ?></td>
+                    <td><?= htmlspecialchars($leg['counterparty_name'] ?? '-') ?></td>
+                    <td><?= htmlspecialchars($leg['transaction_date']) ?></td>
+                    <td>
+                        <?php
+                            $badgeClass = match($leg['status']) {
+                                'COMPLETED' => 'bg-success',
+                                'REJECTED'  => 'bg-danger',
+                                'PENDING'   => 'bg-warning text-dark',
+                                default     => 'bg-secondary'
+                            };
+                        ?>
+                        <span class="badge <?= $badgeClass ?>"><?= htmlspecialchars($leg['status']) ?></span>
+                    </td>
+                    <td><?= htmlspecialchars($leg['initiated_by_user'] ?? '-') ?></td>
+                    <td><?= htmlspecialchars($leg['authorised_by_user'] ?? '-') ?></td>
+                </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+    </div>
+</div>
+<?php endif; ?>
+
+<!-- New Transaction Form -->
 <?php if (hasRole('Teller')): ?>
 <div class="card mb-4">
     <div class="card-header">Record New Transaction</div>
@@ -310,8 +426,7 @@ require_once __DIR__ . '/../includes/header.php';
 
                 <div class="col-md-4" id="counterparty_field" style="display:none;">
                     <label class="form-label" id="counterparty_label">Counterparty Name</label>
-                    <input type="text" name="counterparty_name" class="form-control"
-                           placeholder="Enter name">
+                    <input type="text" name="counterparty_name" class="form-control" placeholder="Enter name">
                 </div>
 
                 <div class="col-md-4">
@@ -329,7 +444,7 @@ require_once __DIR__ . '/../includes/header.php';
                         <option value="Other">Other</option>
                     </select>
                 </div>
-                                <div class="col-md-8">
+                <div class="col-md-8">
                     <label class="form-label">Narration</label>
                     <input type="text" name="transaction_narration" class="form-control"
                            placeholder="Brief description of transaction">
@@ -362,7 +477,7 @@ require_once __DIR__ . '/../includes/header.php';
 </script>
 <?php endif; ?>
 
-<!-- Pending Transactions: visible to Branch Managers and Admins only -->
+<!-- Pending Transactions -->
 <?php if (hasRole('Branch Manager') && count($pendingTransactions) > 0): ?>
 <div class="card mb-4 border-warning">
     <div class="card-header bg-warning text-dark">
@@ -385,7 +500,11 @@ require_once __DIR__ . '/../includes/header.php';
             <tbody>
                 <?php foreach ($pendingTransactions as $ptxn): ?>
                 <tr>
-                    <td><?= htmlspecialchars($ptxn['reference_number']) ?></td>
+                    <td>
+                        <a href="?detail=<?= urlencode($ptxn['reference_number']) ?>">
+                            <?= htmlspecialchars($ptxn['reference_number']) ?>
+                        </a>
+                    </td>
                     <td><?= htmlspecialchars($ptxn['customer_name'] ?? '-') ?></td>
                     <td><?= htmlspecialchars($ptxn['account_number'] ?? '-') ?></td>
                     <td>&pound;<?= number_format($ptxn['debit_amount'], 2) ?></td>
@@ -412,27 +531,72 @@ require_once __DIR__ . '/../includes/header.php';
 </div>
 <?php endif; ?>
 
-<!-- Completed Transactions -->
-<h5 class="mb-3">Completed Transactions</h5>
+<!-- Search and Filter -->
+<div class="card mb-3">
+    <div class="card-body">
+        <form method="GET" class="row g-2 align-items-end">
+            <div class="col-md-3">
+                <label class="form-label">Search</label>
+                <input type="text" name="search" class="form-control"
+                       placeholder="Reference, account, customer, narration..."
+                       value="<?= htmlspecialchars($search) ?>">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Status</label>
+                <select name="filter_status" class="form-control">
+                    <option value="">All</option>
+                    <option value="COMPLETED" <?= $filterStatus === 'COMPLETED' ? 'selected' : '' ?>>Completed</option>
+                    <option value="REJECTED"  <?= $filterStatus === 'REJECTED'  ? 'selected' : '' ?>>Rejected</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Date From</label>
+                <input type="date" name="date_from" class="form-control" value="<?= htmlspecialchars($dateFrom) ?>">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label">Date To</label>
+                <input type="date" name="date_to" class="form-control" value="<?= htmlspecialchars($dateTo) ?>">
+            </div>
+            <div class="col-md-2">
+                <button type="submit" class="btn btn-primary w-100">Search</button>
+            </div>
+            <div class="col-md-1">
+                <a href="transactions.php" class="btn btn-secondary w-100">Reset</a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Completed / Rejected Transactions -->
+<h5 class="mb-3">
+    Transactions
+    <span class="badge bg-secondary"><?= count($transactions) ?> results</span>
+</h5>
 <table class="table table-striped table-bordered">
     <thead>
         <tr>
-            <th>ID</th>
-            <th>Reference</th>
+            <th><?= sortLink('transaction_id', 'ID', $sortCol, $nextDir, $search, $filterStatus, $dateFrom, $dateTo) ?></th>
+            <th><?= sortLink('reference_number', 'Reference', $sortCol, $nextDir, $search, $filterStatus, $dateFrom, $dateTo) ?></th>
             <th>Account</th>
             <th>Name</th>
             <th>Type</th>
-            <th>Amount</th>
+            <th><?= sortLink('amount', 'Amount', $sortCol, $nextDir, $search, $filterStatus, $dateFrom, $dateTo) ?></th>
             <th>Category</th>
             <th>Narration</th>
-            <th>Date</th>
             <th>Counterparty</th>
+            <th><?= sortLink('transaction_date', 'Date', $sortCol, $nextDir, $search, $filterStatus, $dateFrom, $dateTo) ?></th>
             <th>Initiated By</th>
             <th>Authorised By</th>
-            <th>Status</th>
+            <th><?= sortLink('status', 'Status', $sortCol, $nextDir, $search, $filterStatus, $dateFrom, $dateTo) ?></th>
+            <th>Detail</th>
         </tr>
     </thead>
     <tbody>
+        <?php if (count($transactions) === 0): ?>
+        <tr>
+            <td colspan="14" class="text-center text-muted">No transactions found.</td>
+        </tr>
+        <?php endif; ?>
         <?php foreach ($transactions as $txn): ?>
         <tr>
             <td><?= htmlspecialchars($txn['transaction_id']) ?></td>
@@ -447,8 +611,8 @@ require_once __DIR__ . '/../includes/header.php';
             <td>&pound;<?= number_format($txn['amount'], 2) ?></td>
             <td><?= htmlspecialchars($txn['transaction_category'] ?? '-') ?></td>
             <td><?= htmlspecialchars($txn['transaction_narration'] ?? '-') ?></td>
-            <td><?= htmlspecialchars($txn['transaction_date']) ?></td>
             <td><?= htmlspecialchars($txn['counterparty_name'] ?? '-') ?></td>
+            <td><?= htmlspecialchars($txn['transaction_date']) ?></td>
             <td><?= htmlspecialchars($txn['initiated_by_user'] ?? '-') ?></td>
             <td><?= htmlspecialchars($txn['authorised_by_user'] ?? '-') ?></td>
             <td>
@@ -460,6 +624,12 @@ require_once __DIR__ . '/../includes/header.php';
                     };
                 ?>
                 <span class="badge <?= $badgeClass ?>"><?= htmlspecialchars($txn['status']) ?></span>
+            </td>
+            <td>
+                <a href="?detail=<?= urlencode($txn['reference_number']) ?>"
+                   class="btn btn-sm btn-info text-white">
+                    View
+                </a>
             </td>
         </tr>
         <?php endforeach; ?>
