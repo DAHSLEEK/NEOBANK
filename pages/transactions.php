@@ -329,11 +329,7 @@ require_once __DIR__ . '/../includes/header.php';
                         <option value="Other">Other</option>
                     </select>
                 </div>
-                <div class="col-md-4">
-                    <label class="form-label">Reference Number</label>
-                    <input type="text" class="form-control" value="Auto-generated on save" disabled>
-                </div>
-                <div class="col-md-8">
+                                <div class="col-md-8">
                     <label class="form-label">Narration</label>
                     <input type="text" name="transaction_narration" class="form-control"
                            placeholder="Brief description of transaction">

@@ -9,15 +9,23 @@ $message = '';
 
 // Handle Add / Update form submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $account_id     = $_POST['account_id'] ?? null;
-    $customer_id    = $_POST['customer_id'];
-    $branch_id      = $_POST['branch_id'];
+    $account_id      = $_POST['account_id'] ?? null;
+    $customer_id     = $_POST['customer_id'];
+    $branch_id       = $_POST['branch_id'];
+    $account_type    = $_POST['account_type'];
+    $account_name    = trim($_POST['account_name']);
+    $opening_balance = $_POST['opening_balance'] ?? '0.00';
+    $date_opened     = date('Y-m-d');
+
     if (!$account_id) {
-        // Auto-generate account number: NEO- followed by 8-digit sequential number
-        // Loop ensures the generated number does not already exist, even in edge cases
+        // Auto-generate account number: NEO- followed by 8-digit number
+        // Loop ensures generated number does not already exist
         do {
-            $maxStmt = $pdo->query("SELECT MAX(account_id) AS max_id FROM ACCOUNT");
-            $nextId = ($maxStmt->fetch()['max_id'] ?? 0) + 1;
+            $maxStmt = $pdo->query("
+                SELECT MAX(CAST(SUBSTRING(account_number, 5) AS UNSIGNED)) AS max_num
+                FROM ACCOUNT
+            ");
+            $nextId = ($maxStmt->fetch()['max_num'] ?? 0) + 1;
             $candidate_number = 'NEO-' . str_pad($nextId, 8, '0', STR_PAD_LEFT);
 
             $checkStmt = $pdo->prepare("SELECT COUNT(*) FROM ACCOUNT WHERE account_number = ?");
@@ -26,23 +34,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } while ($exists);
 
         $account_number = $candidate_number;
-    } else {
-        $account_number = trim($_POST['account_number']);
     }
-    $account_type   = $_POST['account_type'];
-    $account_name   = trim($_POST['account_name']);
-    $date_opened = date('Y-m-d');
-    $opening_balance = $_POST['opening_balance'];
 
     if ($account_id) {
-        // UPDATE existing account
+        // UPDATE existing account (account number is never changed)
         $stmt = $pdo->prepare("
             UPDATE ACCOUNT SET customer_id = ?, branch_id = ?,
                 account_type = ?, account_name = ?
             WHERE account_id = ?
         ");
-        $stmt->execute([$customer_id, $branch_id, $account_type,
-                         $account_name, $account_id]);
+        $stmt->execute([$customer_id, $branch_id, $account_type, $account_name, $account_id]);
         $message = "Account updated successfully.";
     } else {
         // INSERT new account
@@ -53,14 +54,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([$customer_id, $branch_id, $account_number, $account_type, $account_name, $date_opened]);
         $newAccountId = $pdo->lastInsertId();
 
-        // Create the initial balance record for this account
+        // Create initial balance record
         $stmt = $pdo->prepare("
             INSERT INTO ACCOUNT_BALANCE (account_id, balance, currency, balance_date, total_credit, total_debit)
             VALUES (?, ?, 'GBP', CURDATE(), ?, 0.00)
         ");
         $stmt->execute([$newAccountId, $opening_balance, $opening_balance]);
 
-        // Create the initial status record for this account
+        // Create initial status record
         $stmt = $pdo->prepare("
             INSERT INTO ACCOUNT_STATUS (account_id, status, status_date, changed_by)
             VALUES (?, 'ACTIVE', NOW(), NULL)
@@ -82,7 +83,7 @@ if (isset($_GET['edit'])) {
 $customers = $pdo->query("SELECT customer_id, customer_name FROM CUSTOMER ORDER BY customer_name")->fetchAll();
 $branches  = $pdo->query("SELECT branch_id, branch_name FROM BRANCH ORDER BY branch_name")->fetchAll();
 
-// Fetch all accounts with customer name, branch name, balance, and current status
+// Fetch all customer accounts with customer name, branch name, balance, and current status
 $accounts = $pdo->query("
     SELECT a.*, c.customer_name, b.branch_name, bal.balance,
         (SELECT status FROM ACCOUNT_STATUS WHERE account_id = a.account_id ORDER BY status_date DESC LIMIT 1) AS current_status
@@ -90,6 +91,7 @@ $accounts = $pdo->query("
     LEFT JOIN CUSTOMER c ON c.customer_id = a.customer_id
     LEFT JOIN BRANCH b ON b.branch_id = a.branch_id
     LEFT JOIN ACCOUNT_BALANCE bal ON bal.account_id = a.account_id
+    WHERE a.account_category = 'CUSTOMER'
     ORDER BY a.account_id DESC
 ")->fetchAll();
 
@@ -102,9 +104,9 @@ require_once __DIR__ . '/../includes/header.php';
     <div class="alert alert-success"><?= htmlspecialchars($message) ?></div>
 <?php endif; ?>
 
-    <div class="mb-3">
+<div class="mb-3">
     <a href="customers.php" class="btn btn-outline-primary">+ New Customer</a>
-    </div>
+</div>
 
 <!-- Add / Edit Form -->
 <div class="card mb-4">
@@ -145,8 +147,8 @@ require_once __DIR__ . '/../includes/header.php';
                 <div class="col-md-4">
                     <label class="form-label">Account Type</label>
                     <select name="account_type" class="form-control" required>
-                        <option value="Current" <?= ($editAccount['account_type'] ?? '') === 'Current' ? 'selected' : '' ?>>Current</option>
-                        <option value="Savings" <?= ($editAccount['account_type'] ?? '') === 'Savings' ? 'selected' : '' ?>>Savings</option>
+                        <option value="Current"  <?= ($editAccount['account_type'] ?? '') === 'Current'  ? 'selected' : '' ?>>Current</option>
+                        <option value="Savings"  <?= ($editAccount['account_type'] ?? '') === 'Savings'  ? 'selected' : '' ?>>Savings</option>
                         <option value="Business" <?= ($editAccount['account_type'] ?? '') === 'Business' ? 'selected' : '' ?>>Business</option>
                     </select>
                 </div>
@@ -154,21 +156,16 @@ require_once __DIR__ . '/../includes/header.php';
                 <?php if ($editAccount): ?>
                 <div class="col-md-4">
                     <label class="form-label">Account Number</label>
-                    <input type="text" class="form-control" 
+                    <input type="text" class="form-control"
                            value="<?= htmlspecialchars($editAccount['account_number']) ?>" disabled>
                 </div>
-                <?php else: ?>
-                <div class="col-md-4">
-                    <label class="form-label">Account Number</label>
-                    <input type="text" class="form-control" value="Auto-generated on save" disabled>
-                </div>
                 <?php endif; ?>
+
                 <div class="col-md-4">
                     <label class="form-label">Account Name</label>
                     <input type="text" name="account_name" class="form-control"
                            value="<?= htmlspecialchars($editAccount['account_name'] ?? '') ?>">
                 </div>
-
 
                 <?php if (!$editAccount): ?>
                 <div class="col-md-4">
@@ -214,7 +211,11 @@ require_once __DIR__ . '/../includes/header.php';
             <td>
                 <?php
                     $status = $acc['current_status'] ?? 'UNKNOWN';
-                    $badgeClass = $status === 'ACTIVE' ? 'bg-success' : ($status === 'SUSPENDED' ? 'bg-danger' : 'bg-secondary');
+                    $badgeClass = match($status) {
+                        'ACTIVE'    => 'bg-success',
+                        'SUSPENDED' => 'bg-danger',
+                        default     => 'bg-secondary'
+                    };
                 ?>
                 <span class="badge <?= $badgeClass ?>"><?= htmlspecialchars($status) ?></span>
             </td>
