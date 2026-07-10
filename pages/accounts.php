@@ -31,12 +31,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if ($account_id) {
+        // Fetch existing values for audit
+        $oldStmt = $pdo->prepare("SELECT customer_id, branch_id, account_type, account_name FROM ACCOUNT WHERE account_id = ?");
+        $oldStmt->execute([$account_id]);
+        $oldData = $oldStmt->fetch();
+
         $stmt = $pdo->prepare("
             UPDATE ACCOUNT SET customer_id = ?, branch_id = ?,
                 account_type = ?, account_name = ?
             WHERE account_id = ?
         ");
         $stmt->execute([$customer_id, $branch_id, $account_type, $account_name, $account_id]);
+
+        auditModification($pdo, 'ACCOUNT', (int)$account_id, 'UPDATE', $oldData, [
+            'customer_id'  => $customer_id,
+            'branch_id'    => $branch_id,
+            'account_type' => $account_type,
+            'account_name' => $account_name,
+        ]);
         $message = "Account updated successfully.";
     } else {
         $stmt = $pdo->prepare("
@@ -57,6 +69,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             VALUES (?, 'ACTIVE', NOW(), NULL)
         ");
         $stmt->execute([$newAccountId]);
+        auditModification($pdo, 'ACCOUNT', (int)$newAccountId, 'INSERT', null, [
+            'account_number'   => $account_number,
+            'account_type'     => $account_type,
+            'account_name'     => $account_name,
+            'opening_balance'  => $opening_balance,
+        ]);
         $message = "Account opened successfully.";
     }
 }

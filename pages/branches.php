@@ -17,9 +17,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $country     = trim($_POST['country'] ?? 'United Kingdom');
 
     if ($branch_id) {
+        $oldStmt = $pdo->prepare("SELECT branch_name, branch_code, status FROM BRANCH WHERE branch_id = ?");
+        $oldStmt->execute([$branch_id]);
+        $oldData = $oldStmt->fetch();
+
         $stmt = $pdo->prepare("UPDATE BRANCH SET branch_name = ?, branch_code = ? WHERE branch_id = ?");
         $stmt->execute([$branch_name, $branch_code, $branch_id]);
 
+        auditModification($pdo, 'BRANCH', (int)$branch_id, 'UPDATE', $oldData, [
+            'branch_name' => $branch_name,
+            'branch_code' => $branch_code,
+        ]);
         $check = $pdo->prepare("SELECT contact_id FROM CONTACT WHERE branch_id = ?");
         $check->execute([$branch_id]);
         if ($check->fetch()) {
@@ -48,6 +56,7 @@ if (isset($_GET['toggle_status'])) {
     $currentStatus = $current->fetchColumn();
     $newStatus = $currentStatus === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
     $pdo->prepare("UPDATE BRANCH SET status = ? WHERE branch_id = ?")->execute([$newStatus, $toggle_id]);
+    auditModification($pdo, 'BRANCH', $toggle_id, 'STATUS_CHANGE', ['status' => $currentStatus], ['status' => $newStatus]);
     $message = "Branch status updated to {$newStatus}.";
 }
 

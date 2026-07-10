@@ -25,6 +25,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $country       = trim($_POST['country']);
 
     if ($customer_id) {
+        // Fetch existing values for audit before updating
+        $oldStmt = $pdo->prepare("
+            SELECT customer_name, date_of_birth, customer_type, gender,
+                   nationality, occupation, id_type, id_number
+            FROM CUSTOMER WHERE customer_id = ?
+        ");
+        $oldStmt->execute([$customer_id]);
+        $oldData = $oldStmt->fetch();
+
         $stmt = $pdo->prepare("
             UPDATE CUSTOMER SET customer_name = ?, date_of_birth = ?, customer_type = ?,
                 gender = ?, nationality = ?, occupation = ?, id_type = ?, id_number = ?
@@ -33,20 +42,59 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([$customer_name, $date_of_birth, $customer_type, $gender,
                          $nationality, $occupation, $id_type, $id_number, $customer_id]);
 
+        // Write audit record for customer update
+        auditModification($pdo, 'CUSTOMER', (int)$customer_id, 'UPDATE', $oldData, [
+            'customer_name' => $customer_name,
+            'date_of_birth' => $date_of_birth,
+            'customer_type' => $customer_type,
+            'gender'        => $gender,
+            'nationality'   => $nationality,
+            'occupation'    => $occupation,
+            'id_type'       => $id_type,
+            'id_number'     => $id_number,
+        ]);
+
+        // Update or insert CONTACT row
         $check = $pdo->prepare("SELECT contact_id FROM CONTACT WHERE customer_id = ?");
         $check->execute([$customer_id]);
         if ($check->fetch()) {
+            // Fetch old contact values for audit
+            $oldContactStmt = $pdo->prepare("
+                SELECT email, phone, mobile, address, postcode, country
+                FROM CONTACT WHERE customer_id = ?
+            ");
+            $oldContactStmt->execute([$customer_id]);
+            $oldContact = $oldContactStmt->fetch();
+
             $stmt = $pdo->prepare("
                 UPDATE CONTACT SET email = ?, phone = ?, mobile = ?, address = ?, postcode = ?, country = ?
                 WHERE customer_id = ?
             ");
             $stmt->execute([$email, $phone, $mobile, $address, $postcode, $country, $customer_id]);
+
+            auditModification($pdo, 'CONTACT', (int)$customer_id, 'UPDATE', $oldContact, [
+                'email'    => $email,
+                'phone'    => $phone,
+                'mobile'   => $mobile,
+                'address'  => $address,
+                'postcode' => $postcode,
+                'country'  => $country,
+            ]);
         } else {
             $stmt = $pdo->prepare("
                 INSERT INTO CONTACT (customer_id, email, phone, mobile, address, postcode, country)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             ");
             $stmt->execute([$customer_id, $email, $phone, $mobile, $address, $postcode, $country]);
+
+            auditModification($pdo, 'CONTACT', (int)$customer_id, 'INSERT', null, [
+                'email'    => $email,
+                'phone'    => $phone,
+                'mobile'   => $mobile,
+                'address'  => $address,
+                'postcode' => $postcode,
+                'country'  => $country,
+            ]);
         }
         $message = "Customer updated successfully.";
     } else {
@@ -64,6 +112,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             VALUES (?, ?, ?, ?, ?, ?, ?)
         ");
         $stmt->execute([$newCustomerId, $email, $phone, $mobile, $address, $postcode, $country]);
+
+        auditModification($pdo, 'CUSTOMER', (int)$newCustomerId, 'INSERT', null, [
+            'customer_name' => $customer_name,
+            'date_of_birth' => $date_of_birth,
+            'customer_type' => $customer_type,
+            'gender'        => $gender,
+            'nationality'   => $nationality,
+            'occupation'    => $occupation,
+            'id_type'       => $id_type,
+            'id_number'     => $id_number,
+        ]);
         $message = "Customer added successfully.";
     }
 }

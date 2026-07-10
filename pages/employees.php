@@ -20,8 +20,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $country     = trim($_POST['country'] ?? 'United Kingdom');
 
     if ($employee_id) {
+        $oldStmt = $pdo->prepare("SELECT branch_id, full_name, role, hire_date, status FROM EMPLOYEE WHERE employee_id = ?");
+        $oldStmt->execute([$employee_id]);
+        $oldData = $oldStmt->fetch();
+
         $stmt = $pdo->prepare("UPDATE EMPLOYEE SET branch_id = ?, full_name = ?, role = ?, hire_date = ? WHERE employee_id = ?");
         $stmt->execute([$branch_id, $full_name, $role, $hire_date, $employee_id]);
+
+        auditModification($pdo, 'EMPLOYEE', (int)$employee_id, 'UPDATE', $oldData, [
+            'branch_id' => $branch_id,
+            'full_name' => $full_name,
+            'role'      => $role,
+            'hire_date' => $hire_date,
+        ]);
 
         $check = $pdo->prepare("SELECT contact_id FROM CONTACT WHERE employee_id = ?");
         $check->execute([$employee_id]);
@@ -40,6 +51,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $stmt = $pdo->prepare("INSERT INTO CONTACT (employee_id, email, phone, mobile, address, postcode, country) VALUES (?, ?, ?, ?, ?, ?, ?)");
         $stmt->execute([$newEmployeeId, $email, $phone, $mobile, $address, $postcode, $country]);
+        auditModification($pdo, 'EMPLOYEE', (int)$newEmployeeId, 'INSERT', null, [
+            'full_name' => $full_name,
+            'role'      => $role,
+            'branch_id' => $branch_id,
+        ]);
         $message = "Employee added successfully.";
     }
 }
@@ -51,6 +67,7 @@ if (isset($_GET['toggle_status'])) {
     $currentStatus = $current->fetchColumn();
     $newStatus = $currentStatus === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
     $pdo->prepare("UPDATE EMPLOYEE SET status = ? WHERE employee_id = ?")->execute([$newStatus, $toggle_id]);
+    auditModification($pdo, 'EMPLOYEE', $toggle_id, 'STATUS_CHANGE', ['status' => $currentStatus], ['status' => $newStatus]);
     $message = "Employee status updated to {$newStatus}.";
 }
 
