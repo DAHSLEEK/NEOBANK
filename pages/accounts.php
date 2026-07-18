@@ -129,7 +129,12 @@ $accStmt = $pdo->prepare("
     FROM ACCOUNT a
     LEFT JOIN CUSTOMER c ON c.customer_id = a.customer_id
     LEFT JOIN BRANCH b ON b.branch_id = a.branch_id
-    LEFT JOIN ACCOUNT_BALANCE bal ON bal.account_id = a.account_id
+    LEFT JOIN ACCOUNT_BALANCE bal ON bal.balance_id = (
+        SELECT balance_id FROM ACCOUNT_BALANCE
+        WHERE account_id = a.account_id
+        ORDER BY balance_date DESC, balance_id DESC
+        LIMIT 1
+    )
     {$whereSQL}
     ORDER BY {$sortExpression} {$sortDir}
 ");

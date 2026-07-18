@@ -15,7 +15,14 @@ function postLeg(PDO $pdo, int $accountId, string $type, float $amount, string $
 }
 
 function updateBalance(PDO $pdo, int $accountId, string $type, float $amount): void {
-    $balStmt = $pdo->prepare("SELECT balance_id, balance, total_credit, total_debit FROM ACCOUNT_BALANCE WHERE account_id = ?");
+    // Fetch the most recent balance row for this account
+    $balStmt = $pdo->prepare("
+        SELECT balance, total_credit, total_debit
+        FROM ACCOUNT_BALANCE
+        WHERE account_id = ?
+        ORDER BY balance_date DESC, balance_id DESC
+        LIMIT 1
+    ");
     $balStmt->execute([$accountId]);
     $bal = $balStmt->fetch();
 
@@ -29,12 +36,12 @@ function updateBalance(PDO $pdo, int $accountId, string $type, float $amount): v
         $newTotalDebit  = $bal['total_debit'] + $amount;
     }
 
-    $updStmt = $pdo->prepare("
-        UPDATE ACCOUNT_BALANCE
-        SET balance = ?, total_credit = ?, total_debit = ?, balance_date = CURDATE()
-        WHERE balance_id = ?
+    // Insert a new balance history row instead of updating
+    $insStmt = $pdo->prepare("
+        INSERT INTO ACCOUNT_BALANCE (account_id, balance, currency, balance_date, total_credit, total_debit)
+        VALUES (?, ?, 'GBP', CURDATE(), ?, ?)
     ");
-    $updStmt->execute([$newBalance, $newTotalCredit, $newTotalDebit, $bal['balance_id']]);
+    $insStmt->execute([$accountId, $newBalance, $newTotalCredit, $newTotalDebit]);
 }
 
 function generateReference(PDO $pdo): string {
@@ -264,7 +271,12 @@ $customerAccounts = $pdo->query("
     SELECT a.account_id, a.account_number, a.account_type, c.customer_name, ab.balance
     FROM ACCOUNT a
     LEFT JOIN CUSTOMER c ON c.customer_id = a.customer_id
-    LEFT JOIN ACCOUNT_BALANCE ab ON ab.account_id = a.account_id
+    LEFT JOIN ACCOUNT_BALANCE ab ON ab.balance_id = (
+        SELECT balance_id FROM ACCOUNT_BALANCE
+        WHERE account_id = a.account_id
+        ORDER BY balance_date DESC, balance_id DESC
+        LIMIT 1
+    )
     WHERE a.account_category = 'CUSTOMER'
     ORDER BY a.account_number
 ")->fetchAll();
