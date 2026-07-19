@@ -23,7 +23,7 @@ define('LOCKOUT_MINUTES', 15);
 
 function getRecentFailedAttempts(PDO $pdo, string $username, string $ip): int {
     $stmt = $pdo->prepare("
-        SELECT COUNT(*) FROM LOGIN_ATTEMPT
+        SELECT COUNT(*) FROM LOGIN
         WHERE (username = ? OR ip_address = ?)
         AND success = 0
         AND attempted_at >= DATE_SUB(NOW(), INTERVAL " . LOCKOUT_MINUTES . " MINUTE)
@@ -32,11 +32,11 @@ function getRecentFailedAttempts(PDO $pdo, string $username, string $ip): int {
     return (int) $stmt->fetchColumn();
 }
 
-function logAttempt(PDO $pdo, string $username, string $ip, bool $success): void {
+function logAttempt(PDO $pdo, string $username, string $ip, bool $success, ?int $userId = null): void {
     $pdo->prepare("
-        INSERT INTO LOGIN_ATTEMPT (username, ip_address, success)
-        VALUES (?, ?, ?)
-    ")->execute([$username, $ip, $success ? 1 : 0]);
+        INSERT INTO login (username, ip_address, user_id, success)
+        VALUES (?, ?, ?, ?)
+    ")->execute([$username, $ip, $userId, $success ? 1 : 0]);
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -59,7 +59,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $user = $stmt->fetch();
 
         if ($user && password_verify($password, $user['password_hash'])) {
-            logAttempt($pdo, $username, $ip, true);
+            logAttempt($pdo, $username, $ip, true, $user['user_id']);
 
             // Session fixation protection
             session_regenerate_id(true);
@@ -77,7 +77,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             header('Location: /neobank/');
             exit;
         } else {
-            logAttempt($pdo, $username, $ip, false);
+            logAttempt($pdo, $username, $ip, false, null);
             $remainingAttempts = MAX_ATTEMPTS - ($recentFails + 1);
             logWarn("LOGIN FAILED for username '{$username}' from {$ip} - " . max(0, $remainingAttempts) . " attempt(s) remaining");
             $error = "Invalid username or password. " . max(0, $remainingAttempts) . " attempt(s) remaining before lockout.";
