@@ -21,6 +21,7 @@ $allowedPages = [
     'transactions' => ['minRole' => 'Teller',             'file' => 'pages/transactions.php'],
     'branches'     => ['minRole' => 'Compliance Officer', 'file' => 'pages/branches.php'],
     'employees'    => ['minRole' => 'Compliance Officer', 'file' => 'pages/employees.php'],
+    'reports'      => ['minRole' => 'Compliance Officer', 'file' => 'pages/reports.php'],
 ];
 
 if (!array_key_exists($page, $allowedPages)) {

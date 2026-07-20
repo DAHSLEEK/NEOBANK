@@ -23,6 +23,9 @@
         <li class="nav-item">
           <a class="nav-link" href="/neobank/?page=employees">Employees</a>
         </li>
+        <li class="nav-item">
+          <a class="nav-link" href="/neobank/?page=reports">Reports</a>
+        </li>
         <?php endif; ?>
       </ul>
       <ul class="navbar-nav ms-auto">
@@ -35,6 +38,9 @@
         </li>
         <li class="nav-item">
           <a class="nav-link text-warning" href="/neobank/logout.php">Logout</a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" href="/neobank/?page=reports">Reports</a>
         </li>
         <?php endif; ?>
       </ul>
