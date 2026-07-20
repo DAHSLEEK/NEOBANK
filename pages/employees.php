@@ -10,7 +10,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $employee_id = $_POST['employee_id'] ?? null;
     $branch_id   = $_POST['branch_id'];
     $full_name   = trim($_POST['full_name']);
-    $role        = trim($_POST['role']);
+    $job_title   = trim($_POST['job_title']);
     $hire_date   = $_POST['hire_date'];
     $email       = trim($_POST['email'] ?? '');
     $phone       = trim($_POST['phone'] ?? '');
@@ -20,46 +20,74 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $country     = trim($_POST['country'] ?? 'United Kingdom');
 
     if ($employee_id) {
-        $oldStmt = $pdo->prepare("SELECT branch_id, full_name, role, hire_date, status FROM EMPLOYEE WHERE employee_id = ?");
+        // Fetch existing values for audit before updating
+        $oldStmt = $pdo->prepare("SELECT branch_id, full_name, job_title, hire_date, status FROM EMPLOYEE WHERE employee_id = ?");
         $oldStmt->execute([$employee_id]);
         $oldData = $oldStmt->fetch();
 
-        $stmt = $pdo->prepare("UPDATE EMPLOYEE SET branch_id = ?, full_name = ?, role = ?, hire_date = ? WHERE employee_id = ?");
-        $stmt->execute([$branch_id, $full_name, $role, $hire_date, $employee_id]);
+        $stmt = $pdo->prepare("UPDATE EMPLOYEE SET branch_id = ?, full_name = ?, job_title = ?, hire_date = ? WHERE employee_id = ?");
+        $stmt->execute([$branch_id, $full_name, $job_title, $hire_date, $employee_id]);
 
         auditModification($pdo, 'EMPLOYEE', (int)$employee_id, 'UPDATE', $oldData, [
             'branch_id' => $branch_id,
             'full_name' => $full_name,
-            'role'      => $role,
+            'job_title' => $job_title,
             'hire_date' => $hire_date,
         ]);
 
+        // Update or insert CONTACT row
         $check = $pdo->prepare("SELECT contact_id FROM CONTACT WHERE employee_id = ?");
         $check->execute([$employee_id]);
         if ($check->fetch()) {
+            // Fetch old contact values for audit
+            $oldContactStmt = $pdo->prepare("SELECT email, phone, mobile, address, postcode, country FROM CONTACT WHERE employee_id = ?");
+            $oldContactStmt->execute([$employee_id]);
+            $oldContact = $oldContactStmt->fetch();
+
             $stmt = $pdo->prepare("UPDATE CONTACT SET email = ?, phone = ?, mobile = ?, address = ?, postcode = ?, country = ? WHERE employee_id = ?");
             $stmt->execute([$email, $phone, $mobile, $address, $postcode, $country, $employee_id]);
+
+            auditModification($pdo, 'CONTACT', (int)$employee_id, 'UPDATE', $oldContact, [
+                'email'    => $email,
+                'phone'    => $phone,
+                'mobile'   => $mobile,
+                'address'  => $address,
+                'postcode' => $postcode,
+                'country'  => $country,
+            ]);
         } else {
             $stmt = $pdo->prepare("INSERT INTO CONTACT (employee_id, email, phone, mobile, address, postcode, country) VALUES (?, ?, ?, ?, ?, ?, ?)");
             $stmt->execute([$employee_id, $email, $phone, $mobile, $address, $postcode, $country]);
+
+            auditModification($pdo, 'CONTACT', (int)$employee_id, 'INSERT', null, [
+                'email'    => $email,
+                'phone'    => $phone,
+                'mobile'   => $mobile,
+                'address'  => $address,
+                'postcode' => $postcode,
+                'country'  => $country,
+            ]);
         }
         $message = "Employee updated successfully.";
     } else {
-        $stmt = $pdo->prepare("INSERT INTO EMPLOYEE (branch_id, full_name, role, hire_date) VALUES (?, ?, ?, ?)");
-        $stmt->execute([$branch_id, $full_name, $role, $hire_date]);
+        $stmt = $pdo->prepare("INSERT INTO EMPLOYEE (branch_id, full_name, job_title, hire_date) VALUES (?, ?, ?, ?)");
+        $stmt->execute([$branch_id, $full_name, $job_title, $hire_date]);
         $newEmployeeId = $pdo->lastInsertId();
 
         $stmt = $pdo->prepare("INSERT INTO CONTACT (employee_id, email, phone, mobile, address, postcode, country) VALUES (?, ?, ?, ?, ?, ?, ?)");
         $stmt->execute([$newEmployeeId, $email, $phone, $mobile, $address, $postcode, $country]);
+
         auditModification($pdo, 'EMPLOYEE', (int)$newEmployeeId, 'INSERT', null, [
             'full_name' => $full_name,
-            'role'      => $role,
+            'job_title' => $job_title,
             'branch_id' => $branch_id,
+            'hire_date' => $hire_date,
         ]);
         $message = "Employee added successfully.";
     }
 }
 
+// Handle status toggle
 if (isset($_GET['toggle_status'])) {
     $toggle_id = (int) $_GET['toggle_status'];
     $current = $pdo->prepare("SELECT status FROM EMPLOYEE WHERE employee_id = ?");
@@ -71,6 +99,7 @@ if (isset($_GET['toggle_status'])) {
     $message = "Employee status updated to {$newStatus}.";
 }
 
+// Handle Edit link click
 if (isset($_GET['edit'])) {
     $stmt = $pdo->prepare("
         SELECT e.*, co.email, co.phone, co.mobile, co.address, co.postcode, co.country
@@ -84,13 +113,14 @@ if (isset($_GET['edit'])) {
 
 $branches = $pdo->query("SELECT branch_id, branch_name FROM BRANCH ORDER BY branch_name")->fetchAll();
 
-$search       = trim($_GET['search'] ?? '');
-$filterRole   = $_GET['filter_role'] ?? '';
-$filterStatus = $_GET['filter_status'] ?? '';
-$sortCol      = $_GET['sort'] ?? 'employee_id';
-$sortDir      = $_GET['dir'] ?? 'asc';
+// Search and sort parameters
+$search         = trim($_GET['search'] ?? '');
+$filterJobTitle = $_GET['filter_job_title'] ?? '';
+$filterStatus   = $_GET['filter_status'] ?? '';
+$sortCol        = $_GET['sort'] ?? 'employee_id';
+$sortDir        = $_GET['dir'] ?? 'asc';
 
-$allowedSorts = ['employee_id', 'full_name', 'role', 'hire_date', 'status'];
+$allowedSorts = ['employee_id', 'full_name', 'job_title', 'hire_date', 'status'];
 if (!in_array($sortCol, $allowedSorts)) $sortCol = 'employee_id';
 $sortDir = $sortDir === 'asc' ? 'asc' : 'desc';
 $nextDir = $sortDir === 'asc' ? 'desc' : 'asc';
@@ -103,9 +133,9 @@ if ($search !== '') {
     $like = '%' . $search . '%';
     array_push($params, $like, $like, $like, $like);
 }
-if ($filterRole !== '') {
-    $whereParts[] = "e.role = ?";
-    $params[]     = $filterRole;
+if ($filterJobTitle !== '') {
+    $whereParts[] = "e.job_title = ?";
+    $params[]     = $filterJobTitle;
 }
 if ($filterStatus !== '') {
     $whereParts[] = "e.status = ?";
@@ -127,9 +157,9 @@ $employees = $empStmt->fetchAll();
 
 require_once __DIR__ . '/../includes/header.php';
 
-function sortLink(string $col, string $label, string $currentCol, string $nextDir, string $search, string $filterRole, string $filterStatus): string {
+function sortLink(string $col, string $label, string $currentCol, string $nextDir, string $search, string $filterJobTitle, string $filterStatus): string {
     $arrow  = $currentCol === $col ? ' &#8597;' : '';
-    $params = http_build_query(['page' => 'employees', 'sort' => $col, 'dir' => $nextDir, 'search' => $search, 'filter_role' => $filterRole, 'filter_status' => $filterStatus]);
+    $params = http_build_query(['page' => 'employees', 'sort' => $col, 'dir' => $nextDir, 'search' => $search, 'filter_job_title' => $filterJobTitle, 'filter_status' => $filterStatus]);
     return "<a href='/neobank/?{$params}' class='text-decoration-none text-dark'>{$label}{$arrow}</a>";
 }
 ?>
@@ -142,6 +172,7 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
     </div>
 <?php endif; ?>
 
+<!-- Add / Edit Form -->
 <div class="card mb-4">
     <div class="card-header"><?= $editEmployee ? 'Edit Employee' : 'Add New Employee' ?></div>
     <div class="card-body">
@@ -170,14 +201,14 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
                     </select>
                 </div>
                 <div class="col-md-4">
-                    <label class="form-label">Role</label>
-                    <select name="role" class="form-control" required>
-                        <option value="Branch Manager"    <?= ($editEmployee['role'] ?? '') === 'Branch Manager'    ? 'selected' : '' ?>>Branch Manager</option>
-                        <option value="Customer Advisor"  <?= ($editEmployee['role'] ?? '') === 'Customer Advisor'  ? 'selected' : '' ?>>Customer Advisor</option>
-                        <option value="Loans Officer"     <?= ($editEmployee['role'] ?? '') === 'Loans Officer'     ? 'selected' : '' ?>>Loans Officer</option>
-                        <option value="Compliance Officer"<?= ($editEmployee['role'] ?? '') === 'Compliance Officer'? 'selected' : '' ?>>Compliance Officer</option>
-                        <option value="Teller"            <?= ($editEmployee['role'] ?? '') === 'Teller'            ? 'selected' : '' ?>>Teller</option>
-                        <option value="Admin"             <?= ($editEmployee['role'] ?? '') === 'Admin'             ? 'selected' : '' ?>>Admin</option>
+                    <label class="form-label">Job Title</label>
+                    <select name="job_title" class="form-control" required>
+                        <option value="Branch Manager"     <?= ($editEmployee['job_title'] ?? '') === 'Branch Manager'     ? 'selected' : '' ?>>Branch Manager</option>
+                        <option value="Customer Advisor"   <?= ($editEmployee['job_title'] ?? '') === 'Customer Advisor'   ? 'selected' : '' ?>>Customer Advisor</option>
+                        <option value="Loans Officer"      <?= ($editEmployee['job_title'] ?? '') === 'Loans Officer'      ? 'selected' : '' ?>>Loans Officer</option>
+                        <option value="Compliance Officer" <?= ($editEmployee['job_title'] ?? '') === 'Compliance Officer' ? 'selected' : '' ?>>Compliance Officer</option>
+                        <option value="Teller"             <?= ($editEmployee['job_title'] ?? '') === 'Teller'             ? 'selected' : '' ?>>Teller</option>
+                        <option value="Admin"              <?= ($editEmployee['job_title'] ?? '') === 'Admin'              ? 'selected' : '' ?>>Admin</option>
                     </select>
                 </div>
                 <div class="col-md-4">
@@ -227,6 +258,7 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
     </div>
 </div>
 
+<!-- Search and Filter -->
 <div class="card mb-3">
     <div class="card-body">
         <form method="GET" action="/neobank/" class="row g-2 align-items-end">
@@ -238,15 +270,15 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
                        value="<?= htmlspecialchars($search) ?>">
             </div>
             <div class="col-md-2">
-                <label class="form-label">Role</label>
-                <select name="filter_role" class="form-control">
-                    <option value="">All Roles</option>
-                    <option value="Branch Manager"    <?= $filterRole === 'Branch Manager'    ? 'selected' : '' ?>>Branch Manager</option>
-                    <option value="Customer Advisor"  <?= $filterRole === 'Customer Advisor'  ? 'selected' : '' ?>>Customer Advisor</option>
-                    <option value="Loans Officer"     <?= $filterRole === 'Loans Officer'     ? 'selected' : '' ?>>Loans Officer</option>
-                    <option value="Compliance Officer"<?= $filterRole === 'Compliance Officer'? 'selected' : '' ?>>Compliance Officer</option>
-                    <option value="Teller"            <?= $filterRole === 'Teller'            ? 'selected' : '' ?>>Teller</option>
-                    <option value="Admin"             <?= $filterRole === 'Admin'             ? 'selected' : '' ?>>Admin</option>
+                <label class="form-label">Job Title</label>
+                <select name="filter_job_title" class="form-control">
+                    <option value="">All Job Titles</option>
+                    <option value="Branch Manager"     <?= $filterJobTitle === 'Branch Manager'     ? 'selected' : '' ?>>Branch Manager</option>
+                    <option value="Customer Advisor"   <?= $filterJobTitle === 'Customer Advisor'   ? 'selected' : '' ?>>Customer Advisor</option>
+                    <option value="Loans Officer"      <?= $filterJobTitle === 'Loans Officer'      ? 'selected' : '' ?>>Loans Officer</option>
+                    <option value="Compliance Officer" <?= $filterJobTitle === 'Compliance Officer' ? 'selected' : '' ?>>Compliance Officer</option>
+                    <option value="Teller"             <?= $filterJobTitle === 'Teller'             ? 'selected' : '' ?>>Teller</option>
+                    <option value="Admin"              <?= $filterJobTitle === 'Admin'              ? 'selected' : '' ?>>Admin</option>
                 </select>
             </div>
             <div class="col-md-2">
@@ -267,18 +299,19 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
     </div>
 </div>
 
+<!-- Employee List -->
 <h5 class="mb-3">Employees <span class="badge bg-secondary"><?= count($employees) ?> results</span></h5>
 <table class="table table-striped table-bordered">
     <thead>
         <tr>
-            <th><?= sortLink('employee_id', 'ID',        $sortCol, $nextDir, $search, $filterRole, $filterStatus) ?></th>
-            <th><?= sortLink('full_name',   'Full Name', $sortCol, $nextDir, $search, $filterRole, $filterStatus) ?></th>
+            <th><?= sortLink('employee_id', 'ID',        $sortCol, $nextDir, $search, $filterJobTitle, $filterStatus) ?></th>
+            <th><?= sortLink('full_name',   'Full Name', $sortCol, $nextDir, $search, $filterJobTitle, $filterStatus) ?></th>
             <th>Branch</th>
-            <th><?= sortLink('role',        'Role',      $sortCol, $nextDir, $search, $filterRole, $filterStatus) ?></th>
+            <th><?= sortLink('job_title',   'Job Title', $sortCol, $nextDir, $search, $filterJobTitle, $filterStatus) ?></th>
             <th>Email</th>
             <th>Phone</th>
-            <th><?= sortLink('hire_date',   'Hire Date', $sortCol, $nextDir, $search, $filterRole, $filterStatus) ?></th>
-            <th><?= sortLink('status',      'Status',    $sortCol, $nextDir, $search, $filterRole, $filterStatus) ?></th>
+            <th><?= sortLink('hire_date',   'Hire Date', $sortCol, $nextDir, $search, $filterJobTitle, $filterStatus) ?></th>
+            <th><?= sortLink('status',      'Status',    $sortCol, $nextDir, $search, $filterJobTitle, $filterStatus) ?></th>
             <th>Action</th>
         </tr>
     </thead>
@@ -291,7 +324,7 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
             <td><?= htmlspecialchars($emp['employee_id']) ?></td>
             <td><?= htmlspecialchars($emp['full_name']) ?></td>
             <td><?= htmlspecialchars($emp['branch_name'] ?? '-') ?></td>
-            <td><?= htmlspecialchars($emp['role']) ?></td>
+            <td><?= htmlspecialchars($emp['job_title']) ?></td>
             <td><?= htmlspecialchars($emp['email'] ?? '-') ?></td>
             <td><?= htmlspecialchars($emp['phone'] ?? '-') ?></td>
             <td><?= htmlspecialchars($emp['hire_date']) ?></td>
