@@ -468,16 +468,18 @@ require_once __DIR__ . '/../includes/header.php';
         $txSumParams  = [$dateFrom, $dateTo];
         if ($branchId) $txSumParams[] = $branchId;
 
+        // Summary by transaction type - count each unique reference once (one leg per transaction)
+        // We use the Credit leg only to avoid double-counting, falling back to any leg if needed
         $txSummary = $pdo->prepare("
             SELECT th.transaction_type,
                    COUNT(DISTINCT th.reference_number) AS transaction_count,
-                   SUM(CASE WHEN th.transaction_category = 'Credit' THEN th.amount ELSE 0 END) AS total_credits,
-                   SUM(CASE WHEN th.transaction_category = 'Debit'  THEN th.amount ELSE 0 END) AS total_debits
+                   SUM(th.amount) AS total_volume
             FROM TRANSACTION_HISTORY th
             JOIN ACCOUNT a ON a.account_id = th.account_id
             WHERE th.status = 'COMPLETED'
               AND DATE(th.transaction_date) BETWEEN ? AND ?
               AND th.transaction_category = 'Credit'
+              AND a.account_category = 'CUSTOMER'
               $branchFilter
             GROUP BY th.transaction_type
             ORDER BY transaction_count DESC
@@ -485,7 +487,25 @@ require_once __DIR__ . '/../includes/header.php';
         $txSummary->execute($txSumParams);
         $summaryRows = $txSummary->fetchAll();
 
-        // Daily volume
+        // If no results using CUSTOMER Credit legs, fall back to all completed transactions
+        if (count($summaryRows) === 0) {
+            $txSummaryFallback = $pdo->prepare("
+                SELECT th.transaction_type,
+                       COUNT(DISTINCT th.reference_number) AS transaction_count,
+                       SUM(th.amount) AS total_volume
+                FROM TRANSACTION_HISTORY th
+                JOIN ACCOUNT a ON a.account_id = th.account_id
+                WHERE th.status = 'COMPLETED'
+                  AND DATE(th.transaction_date) BETWEEN ? AND ?
+                  $branchFilter
+                GROUP BY th.transaction_type
+                ORDER BY transaction_count DESC
+            ");
+            $txSummaryFallback->execute($txSumParams);
+            $summaryRows = $txSummaryFallback->fetchAll();
+        }
+
+        // Daily volume - count each unique reference once using MIN(transaction_id) per reference
         $dailyStmt = $pdo->prepare("
             SELECT DATE(th.transaction_date) AS txn_date,
                    COUNT(DISTINCT th.reference_number) AS txn_count,
@@ -493,8 +513,12 @@ require_once __DIR__ . '/../includes/header.php';
             FROM TRANSACTION_HISTORY th
             JOIN ACCOUNT a ON a.account_id = th.account_id
             WHERE th.status = 'COMPLETED'
-              AND th.transaction_category = 'Credit'
               AND DATE(th.transaction_date) BETWEEN ? AND ?
+              AND th.transaction_id = (
+                  SELECT MIN(th2.transaction_id)
+                  FROM TRANSACTION_HISTORY th2
+                  WHERE th2.reference_number = th.reference_number
+              )
               $branchFilter
             GROUP BY DATE(th.transaction_date)
             ORDER BY txn_date ASC
@@ -525,7 +549,7 @@ require_once __DIR__ . '/../includes/header.php';
                             <tr>
                                 <td><?= htmlspecialchars($sr['transaction_type']) ?></td>
                                 <td><?= htmlspecialchars($sr['transaction_count']) ?></td>
-                                <td><?= number_format($sr['total_credits'] + $sr['total_debits'], 2) ?></td>
+                                <td><?= number_format($sr['total_volume'], 2) ?></td>
                             </tr>
                             <?php endforeach; ?>
                         </tbody>
@@ -533,7 +557,7 @@ require_once __DIR__ . '/../includes/header.php';
                             <tr>
                                 <td><strong>Total</strong></td>
                                 <td><strong><?= array_sum(array_column($summaryRows, 'transaction_count')) ?></strong></td>
-                                <td><strong>£<?= number_format(array_sum(array_column($summaryRows, 'total_credits')) + array_sum(array_column($summaryRows, 'total_debits')), 2) ?></strong></td>
+                                <td><strong>£<?= number_format(array_sum(array_column($summaryRows, 'total_volume')), 2) ?></strong></td>
                             </tr>
                         </tfoot>
                     </table>
