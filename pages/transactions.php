@@ -110,6 +110,15 @@ if (isset($_GET['authorise']) && hasRole('Branch Manager')) {
 // Handle new transaction submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verifyCsrf();
+
+    // Separation of Duty: Branch Managers and Admins may NOT initiate transactions
+    if (hasRole('Branch Manager')) {
+        $message = "Error: Branch Managers and Admins are not permitted to initiate "
+                 . "transactions. Please ask a Teller, Customer Advisor, or Loans Officer.";
+        logWarn("Blocked initiation attempt by role '{$_SESSION['role']}' "
+              . "user '{$_SESSION['username']}'.");
+    } else {
+
     $transaction_type = $_POST['transaction_type'];
     $account_id       = (int) $_POST['account_id'];
     $amount           = (float) $_POST['amount'];
@@ -191,6 +200,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         logError("Transaction INITIATION FAILED - Type: {$transaction_type}, Amount: £{$amount} - " . $e->getMessage());
         $message = "Error: " . $e->getMessage();
     }
+
+    } // end else: not Branch Manager or Admin
 }
 
 // Transaction detail view
@@ -367,7 +378,7 @@ function sortLink(string $col, string $label, string $currentCol, string $nextDi
 <?php endif; ?>
 
 <!-- New Transaction Form -->
-<?php if (hasRole('Teller')): ?>
+<?php if (hasRole('Teller') && !hasRole('Branch Manager')): ?>
 <div class="card mb-4">
     <div class="card-header">Record New Transaction</div>
     <div class="card-body">

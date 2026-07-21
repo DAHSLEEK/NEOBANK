@@ -39,9 +39,6 @@
         <li class="nav-item">
           <a class="nav-link text-warning" href="/neobank/logout.php">Logout</a>
         </li>
-        <li class="nav-item">
-          <a class="nav-link" href="/neobank/?page=reports">Reports</a>
-        </li>
         <?php endif; ?>
       </ul>
     </div>
