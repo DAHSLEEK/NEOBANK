@@ -266,7 +266,7 @@ CREATE TABLE `login` (
   PRIMARY KEY (`attempt_id`),
   KEY `fk_login_user` (`user_id`),
   CONSTRAINT `fk_login_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`user_id`)
-) ENGINE=InnoDB AUTO_INCREMENT=9 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=12 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -275,7 +275,7 @@ CREATE TABLE `login` (
 
 LOCK TABLES `login` WRITE;
 /*!40000 ALTER TABLE `login` DISABLE KEYS */;
-INSERT INTO `login` VALUES (1,'admin','127.0.0.1',NULL,'2026-07-08 12:59:51',1),(2,'admin','127.0.0.1',NULL,'2026-07-08 13:23:13',1),(3,'admin','127.0.0.1',NULL,'2026-07-08 13:25:52',0),(4,'admindd','127.0.0.1',NULL,'2026-07-08 13:26:01',0),(5,'admin','127.0.0.1',NULL,'2026-07-08 13:26:05',1),(6,'admin','127.0.0.1',NULL,'2026-07-09 15:34:49',1),(7,'admin','127.0.0.1',NULL,'2026-07-18 22:53:06',1),(8,'admin','127.0.0.1',1,'2026-07-19 21:36:58',1);
+INSERT INTO `login` VALUES (1,'admin','127.0.0.1',NULL,'2026-07-08 12:59:51',1),(2,'admin','127.0.0.1',NULL,'2026-07-08 13:23:13',1),(3,'admin','127.0.0.1',NULL,'2026-07-08 13:25:52',0),(4,'admindd','127.0.0.1',NULL,'2026-07-08 13:26:01',0),(5,'admin','127.0.0.1',NULL,'2026-07-08 13:26:05',1),(6,'admin','127.0.0.1',NULL,'2026-07-09 15:34:49',1),(7,'admin','127.0.0.1',NULL,'2026-07-18 22:53:06',1),(8,'admin','127.0.0.1',1,'2026-07-19 21:36:58',1),(9,'admin','127.0.0.1',1,'2026-07-20 13:12:24',1),(10,'admin','127.0.0.1',1,'2026-07-21 10:14:17',1),(11,'admin','127.0.0.1',1,'2026-07-21 11:53:21',1);
 /*!40000 ALTER TABLE `login` ENABLE KEYS */;
 UNLOCK TABLES;
 
@@ -396,4 +396,4 @@ UNLOCK TABLES;
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
--- Dump completed on 2026-07-20 12:36:44
+-- Dump completed on 2026-07-21 12:21:19
