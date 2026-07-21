@@ -212,21 +212,19 @@ require_once __DIR__ . '/../includes/header.php';
                         <td><strong><?= number_format($openingBalance, 2) ?></strong></td>
                     </tr>
                     <?php foreach ($transactions as $tx):
-                        $isDebit  = in_array($tx['transaction_category'], ['Debit']);
-                        // Determine debit/credit from transaction_category
-                        $debitAmt  = $tx['transaction_category'] === 'Debit'  ? $tx['amount'] : '';
-                        $creditAmt = $tx['transaction_category'] === 'Credit' ? $tx['amount'] : '';
-                        if ($tx['transaction_category'] === 'Debit') {
-                            $runningBalance -= $tx['amount'];
-                        } else {
-                            $runningBalance += $tx['amount'];
-                        }
-                    ?>
+    $debitAmt  = $tx['transaction_type'] === 'Debit'  ? $tx['amount'] : '';
+    $creditAmt = $tx['transaction_type'] === 'Credit' ? $tx['amount'] : '';
+    if ($tx['transaction_type'] === 'Debit') {
+        $runningBalance -= $tx['amount'];
+    } else {
+        $runningBalance += $tx['amount'];
+    }
+?>
                     <tr>
                         <td><?= htmlspecialchars(date('d/m/Y', strtotime($tx['transaction_date']))) ?></td>
                         <td><?= htmlspecialchars($tx['reference_number']) ?></td>
                         <td><?= htmlspecialchars($tx['transaction_type']) ?></td>
-                        <td><?= htmlspecialchars($tx['transaction_narration'] ?? $tx['counterparty_name'] ?? '-') ?></td>
+                        <td><?= htmlspecialchars($tx['transaction_narration'] ?? $tx['transaction_category'] ?? $tx['counterparty_name'] ?? '-') ?></td>
                         <td class="text-danger"><?= $debitAmt  ? number_format($debitAmt, 2)  : '-' ?></td>
                         <td class="text-success"><?= $creditAmt ? number_format($creditAmt, 2) : '-' ?></td>
                         <td><?= number_format($runningBalance, 2) ?></td>
