@@ -19,9 +19,9 @@ $allowedPages = [
     'customers'    => ['minRole' => 'Teller',             'file' => 'pages/customers.php'],
     'accounts'     => ['minRole' => 'Teller',             'file' => 'pages/accounts.php'],
     'transactions' => ['minRole' => 'Teller',             'file' => 'pages/transactions.php'],
-    'branches'     => ['minRole' => 'Compliance Officer', 'file' => 'pages/branches.php'],
-    'employees'    => ['minRole' => 'Compliance Officer', 'file' => 'pages/employees.php'],
-    'reports'      => ['minRole' => 'Compliance Officer', 'file' => 'pages/reports.php'],
+    'branches'     => ['minRole' => 'Branch Manager',     'file' => 'pages/branches.php',   'allowedRoles' => ['Admin', 'Branch Manager', 'Compliance Officer']],
+    'employees'    => ['minRole' => 'Branch Manager',     'file' => 'pages/employees.php',  'allowedRoles' => ['Admin', 'Branch Manager', 'Compliance Officer']],
+    'reports'      => ['minRole' => 'Branch Manager',     'file' => 'pages/reports.php',    'allowedRoles' => ['Admin', 'Branch Manager', 'Compliance Officer']],
 ];
 
 if (!array_key_exists($page, $allowedPages)) {
@@ -30,7 +30,15 @@ if (!array_key_exists($page, $allowedPages)) {
 
 $pageConfig = $allowedPages[$page];
 
-if (!hasRole($pageConfig['minRole'])) {
+// Check access: either allowedRoles list or minRole weight
+$hasAccess = false;
+if (isset($pageConfig['allowedRoles'])) {
+    $hasAccess = in_array($_SESSION['role'] ?? '', $pageConfig['allowedRoles']);
+} else {
+    $hasAccess = hasRole($pageConfig['minRole']);
+}
+
+if (!$hasAccess) {
     http_response_code(403);
     require_once 'includes/header.php';
     echo '<div class="alert alert-danger"><strong>Access Denied.</strong> You do not have permission to view this page.</div>';

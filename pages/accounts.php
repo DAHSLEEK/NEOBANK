@@ -5,6 +5,52 @@ $pdo = getDBConnection();
 $editAccount = null;
 $message = '';
 
+function generateOpeningReference(): string {
+    return 'OPEN-' . date('YmdHis') . '-' . strtoupper(substr(uniqid(), -6));
+}
+
+function updateOpeningBalance(PDO $pdo, int $accountId, string $type, float $amount): void {
+    $stmt = $pdo->prepare("
+        SELECT balance, total_credit, total_debit
+        FROM ACCOUNT_BALANCE
+        WHERE account_id = ?
+        ORDER BY balance_date DESC, balance_id DESC
+        LIMIT 1
+        FOR UPDATE
+    ");
+    $stmt->execute([$accountId]);
+    $current = $stmt->fetch();
+
+    if (!$current) {
+        $current = [
+            'balance' => 0.00,
+            'total_credit' => 0.00,
+            'total_debit' => 0.00
+        ];
+    }
+
+    $balance = (float) $current['balance'];
+    $totalCredit = (float) $current['total_credit'];
+    $totalDebit = (float) $current['total_debit'];
+
+    if ($type === 'Credit') {
+        $balance += $amount;
+        $totalCredit += $amount;
+    } elseif ($type === 'Debit') {
+        $balance -= $amount;
+        $totalDebit += $amount;
+    } else {
+        throw new InvalidArgumentException('Invalid transaction type.');
+    }
+
+    $insert = $pdo->prepare("
+        INSERT INTO ACCOUNT_BALANCE
+            (account_id, balance, currency, balance_date, total_credit, total_debit)
+        VALUES (?, ?, 'GBP', CURDATE(), ?, ?)
+    ");
+    $insert->execute([$accountId, $balance, $totalCredit, $totalDebit]);
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verifyCsrf();
     $account_id      = $_POST['account_id'] ?? null;
@@ -51,31 +97,115 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ]);
         $message = "Account updated successfully.";
     } else {
-        $stmt = $pdo->prepare("
-            INSERT INTO ACCOUNT (customer_id, branch_id, account_number, account_type, account_name, date_opened)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ");
-        $stmt->execute([$customer_id, $branch_id, $account_number, $account_type, $account_name, $date_opened]);
-        $newAccountId = $pdo->lastInsertId();
+        $openingBalance = round((float) $opening_balance, 2);
 
-        $stmt = $pdo->prepare("
-            INSERT INTO ACCOUNT_BALANCE (account_id, balance, currency, balance_date, total_credit, total_debit)
-            VALUES (?, ?, 'GBP', CURDATE(), ?, 0.00)
-        ");
-        $stmt->execute([$newAccountId, $opening_balance, $opening_balance]);
+        if ($openingBalance < 0) {
+            throw new InvalidArgumentException('Opening balance cannot be negative.');
+        }
 
-        $stmt = $pdo->prepare("
-            INSERT INTO ACCOUNT_STATUS (account_id, status, status_date, changed_by)
-            VALUES (?, 'ACTIVE', NOW(), NULL)
-        ");
-        $stmt->execute([$newAccountId]);
-        auditModification($pdo, 'ACCOUNT', (int)$newAccountId, 'INSERT', null, [
-            'account_number'   => $account_number,
-            'account_type'     => $account_type,
-            'account_name'     => $account_name,
-            'opening_balance'  => $opening_balance,
-        ]);
-        $message = "Account opened successfully.";
+        try {
+            $pdo->beginTransaction();
+
+            $stmt = $pdo->prepare("
+                INSERT INTO ACCOUNT
+                    (customer_id, branch_id, account_number, account_type, account_name, date_opened)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ");
+            $stmt->execute([
+                $customer_id,
+                $branch_id,
+                $account_number,
+                $account_type,
+                $account_name,
+                $date_opened
+            ]);
+            $newAccountId = (int) $pdo->lastInsertId();
+
+            // Every account starts from a zero balance snapshot.
+            $stmt = $pdo->prepare("
+                INSERT INTO ACCOUNT_BALANCE
+                    (account_id, balance, currency, balance_date, total_credit, total_debit)
+                VALUES (?, 0.00, 'GBP', CURDATE(), 0.00, 0.00)
+            ");
+            $stmt->execute([$newAccountId]);
+
+            $stmt = $pdo->prepare("
+                INSERT INTO ACCOUNT_STATUS
+                    (account_id, status, status_date, changed_by)
+                VALUES (?, 'ACTIVE', NOW(), NULL)
+            ");
+            $stmt->execute([$newAccountId]);
+
+            if ($openingBalance > 0) {
+                // Treat the opening amount as cash received by the branch.
+                $cashStmt = $pdo->prepare("
+                    SELECT account_id
+                    FROM ACCOUNT
+                    WHERE branch_id = ?
+                      AND account_category = 'INTERNAL-CASH'
+                    LIMIT 1
+                ");
+                $cashStmt->execute([$branch_id]);
+                $branchCashId = (int) $cashStmt->fetchColumn();
+
+                if (!$branchCashId) {
+                    throw new RuntimeException(
+                        'The selected branch does not have an INTERNAL-CASH account.'
+                    );
+                }
+
+                $reference = generateOpeningReference();
+                $initiatedBy = (int) $_SESSION['user_id'];
+                $narration = 'Account opening deposit';
+
+                // Debit branch cash and credit the customer account.
+                $post = $pdo->prepare("
+                    INSERT INTO TRANSACTION_HISTORY
+                        (account_id, transaction_type, amount, transaction_date,
+                         reference_number, transaction_category,
+                         transaction_narration, status, initiated_by, authorised_by)
+                    VALUES (?, ?, ?, NOW(), ?, 'Opening Balance', ?, 'COMPLETED', ?, ?)
+                ");
+
+                $post->execute([
+                    $branchCashId,
+                    'Debit',
+                    $openingBalance,
+                    $reference,
+                    $narration,
+                    $initiatedBy,
+                    $initiatedBy
+                ]);
+
+                $post->execute([
+                    $newAccountId,
+                    'Credit',
+                    $openingBalance,
+                    $reference,
+                    $narration,
+                    $initiatedBy,
+                    $initiatedBy
+                ]);
+
+                updateOpeningBalance($pdo, $branchCashId, 'Debit', $openingBalance);
+                updateOpeningBalance($pdo, $newAccountId, 'Credit', $openingBalance);
+            }
+
+            auditModification($pdo, 'ACCOUNT', $newAccountId, 'INSERT', null, [
+                'account_number'  => $account_number,
+                'account_type'    => $account_type,
+                'account_name'    => $account_name,
+                'opening_balance' => $openingBalance,
+            ]);
+
+            $pdo->commit();
+            $message = "Account opened successfully.";
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            $message = "Error: " . $e->getMessage();
+        }
     }
 }
 

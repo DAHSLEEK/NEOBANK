@@ -146,17 +146,23 @@ require_once __DIR__ . '/../includes/header.php';
         $txStmt->execute([$accountId, $dateFrom, $dateTo]);
         $transactions = $txStmt->fetchAll();
 
-        // Opening balance: most recent balance_date before date_from
+        // Calculate the statement opening balance from completed ledger entries.
+        // This keeps the report consistent with TRANSACTION_HISTORY.
         $openingStmt = $pdo->prepare("
-            SELECT balance FROM ACCOUNT_BALANCE
+            SELECT COALESCE(SUM(
+                CASE
+                    WHEN transaction_type = 'Credit' THEN amount
+                    WHEN transaction_type = 'Debit'  THEN -amount
+                    ELSE 0
+                END
+            ), 0.00) AS opening_balance
+            FROM TRANSACTION_HISTORY
             WHERE account_id = ?
-              AND balance_date < ?
-            ORDER BY balance_date DESC, balance_id DESC
-            LIMIT 1
+              AND status = 'COMPLETED'
+              AND transaction_date < ?
         ");
-        $openingStmt->execute([$accountId, $dateFrom]);
-        $openingRow     = $openingStmt->fetch();
-        $openingBalance = $openingRow ? $openingRow['balance'] : 0.00;
+        $openingStmt->execute([$accountId, $dateFrom . ' 00:00:00']);
+        $openingBalance = (float) $openingStmt->fetchColumn();
     ?>
 
     <!-- Print header -->

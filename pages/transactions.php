@@ -15,33 +15,52 @@ function postLeg(PDO $pdo, int $accountId, string $type, float $amount, string $
 }
 
 function updateBalance(PDO $pdo, int $accountId, string $type, float $amount): void {
-    // Fetch the most recent balance row for this account
+    // Lock the latest balance row so concurrent authorisations cannot
+    // calculate from the same starting balance.
     $balStmt = $pdo->prepare("
         SELECT balance, total_credit, total_debit
         FROM ACCOUNT_BALANCE
         WHERE account_id = ?
         ORDER BY balance_date DESC, balance_id DESC
         LIMIT 1
+        FOR UPDATE
     ");
     $balStmt->execute([$accountId]);
     $bal = $balStmt->fetch();
 
-    if ($type === 'Credit') {
-        $newBalance     = $bal['balance'] + $amount;
-        $newTotalCredit = $bal['total_credit'] + $amount;
-        $newTotalDebit  = $bal['total_debit'];
-    } else {
-        $newBalance     = $bal['balance'] - $amount;
-        $newTotalCredit = $bal['total_credit'];
-        $newTotalDebit  = $bal['total_debit'] + $amount;
+    if (!$bal) {
+        $bal = [
+            'balance' => 0.00,
+            'total_credit' => 0.00,
+            'total_debit' => 0.00
+        ];
     }
 
-    // Insert a new balance history row instead of updating
+    $newBalance = (float) $bal['balance'];
+    $newTotalCredit = (float) $bal['total_credit'];
+    $newTotalDebit = (float) $bal['total_debit'];
+
+    if ($type === 'Credit') {
+        $newBalance += $amount;
+        $newTotalCredit += $amount;
+    } elseif ($type === 'Debit') {
+        $newBalance -= $amount;
+        $newTotalDebit += $amount;
+    } else {
+        throw new InvalidArgumentException('Invalid transaction type.');
+    }
+
     $insStmt = $pdo->prepare("
-        INSERT INTO ACCOUNT_BALANCE (account_id, balance, currency, balance_date, total_credit, total_debit)
+        INSERT INTO ACCOUNT_BALANCE
+            (account_id, balance, currency, balance_date, total_credit, total_debit)
         VALUES (?, ?, 'GBP', CURDATE(), ?, ?)
     ");
-    $insStmt->execute([$accountId, $newBalance, $newTotalCredit, $newTotalDebit]);
+    $insStmt->execute([
+        $accountId,
+        round($newBalance, 2),
+        round($newTotalCredit, 2),
+        round($newTotalDebit, 2)
+    ]);
 }
 
 function generateReference(PDO $pdo): string {
@@ -73,18 +92,59 @@ if (isset($_GET['authorise']) && hasRole('Branch Manager')) {
     if ($pendingLegs) {
         try {
             $pdo->beginTransaction();
+
+            $totalDebit = 0.00;
+            $totalCredit = 0.00;
+
+            foreach ($pendingLegs as $leg) {
+                if ($leg['transaction_type'] === 'Debit') {
+                    $totalDebit += (float) $leg['amount'];
+                } elseif ($leg['transaction_type'] === 'Credit') {
+                    $totalCredit += (float) $leg['amount'];
+                }
+            }
+
+            if (round($totalDebit, 2) !== round($totalCredit, 2)) {
+                throw new Exception(
+                    "Transaction {$reference} is unbalanced and cannot be authorised."
+                );
+            }
+
             foreach ($pendingLegs as $leg) {
                 if ($leg['transaction_type'] === 'Debit') {
                     $accChk = $pdo->prepare("
                         SELECT a.account_category, ab.balance
                         FROM ACCOUNT a
-                        JOIN ACCOUNT_BALANCE ab ON ab.account_id = a.account_id
+                        LEFT JOIN ACCOUNT_BALANCE ab
+                          ON ab.balance_id = (
+                              SELECT balance_id
+                              FROM ACCOUNT_BALANCE
+                              WHERE account_id = a.account_id
+                              ORDER BY balance_date DESC, balance_id DESC
+                              LIMIT 1
+                          )
                         WHERE a.account_id = ?
+                        FOR UPDATE
                     ");
                     $accChk->execute([$leg['account_id']]);
                     $accInfo = $accChk->fetch();
-                    if ($accInfo['account_category'] === 'CUSTOMER' && $leg['amount'] > $accInfo['balance']) {
-                        throw new Exception("Insufficient funds on account ID " . $leg['account_id'] . " at time of authorisation.");
+
+                    if (!$accInfo) {
+                        throw new Exception(
+                            "Account ID {$leg['account_id']} does not exist."
+                        );
+                    }
+
+                    $availableBalance = (float) ($accInfo['balance'] ?? 0.00);
+
+                    if (
+                        $accInfo['account_category'] === 'CUSTOMER'
+                        && (float) $leg['amount'] > $availableBalance
+                    ) {
+                        throw new Exception(
+                            "Insufficient funds on account ID {$leg['account_id']} "
+                            . "at time of authorisation."
+                        );
                     }
                 }
                 updateBalance($pdo, $leg['account_id'], $leg['transaction_type'], $leg['amount']);
@@ -130,13 +190,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $accStmt = $pdo->prepare("
         SELECT a.account_id, a.branch_id, ab.balance
         FROM ACCOUNT a
-        LEFT JOIN ACCOUNT_BALANCE ab ON ab.account_id = a.account_id
+        LEFT JOIN ACCOUNT_BALANCE ab
+          ON ab.balance_id = (
+              SELECT balance_id
+              FROM ACCOUNT_BALANCE
+              WHERE account_id = a.account_id
+              ORDER BY balance_date DESC, balance_id DESC
+              LIMIT 1
+          )
         WHERE a.account_id = ?
     ");
     $accStmt->execute([$account_id]);
     $customerAcc = $accStmt->fetch();
-    $branchId    = $customerAcc['branch_id'];
-    $reference   = generateReference($pdo);
+
+    if (!$customerAcc) {
+        $message = "Error: Selected account was not found.";
+    } else {
+        $branchId  = (int) $customerAcc['branch_id'];
+        $reference = generateReference($pdo);
 
     try {
         $pdo->beginTransaction();
@@ -196,11 +267,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $message = "Transaction initiated successfully. Reference: {$reference}. Awaiting authorisation.";
 
     } catch (Exception $e) {
-        $pdo->rollBack();
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
         logError("Transaction INITIATION FAILED - Type: {$transaction_type}, Amount: £{$amount} - " . $e->getMessage());
         $message = "Error: " . $e->getMessage();
     }
 
+    } // end else: valid selected account
     } // end else: not Branch Manager or Admin
 }
 
